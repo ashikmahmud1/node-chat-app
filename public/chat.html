@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>Chat | ChatApp</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Latest compiled and minified CSS -->
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
+    <link rel="stylesheet" href="/css/styles.css">
+    <link rel="stylesheet" href="/css/animate.css" type="text/css" />
+</head>
+
+<body class="chat">
+<audio id="message-received" autoplay></audio>
+<div class="chat__sidebar" id="chat__sidebar">
+    <h3>People</h3>
+    <div id="users"></div>
+</div>
+
+<div class="chat__main">
+    <div class="alert alert-success animated slideInDown text-center alert-display alert-hide" id="alert-box"> <span class="alert-text"></span></div>
+    <!-- Trigger the modal with a button -->
+    <!-- Modal -->
+    <div id="myModal" class="modal fade" role="dialog">
+        
+        <br><br>
+        <div class="modal-dialog">
+
+            <!-- Modal content-->
+            <div class="modal-content">
+                <div class="modal-header">
+                    <button type="button" class="close" data-dismiss="modal">&times;</button>
+                    <h4 class="modal-title">Modal Header</h4>
+                    <button type="button" id="audio-call-start" class="hide-call-button"></button>
+                    <button type="button" id="video-call-start" class="hide-call-button"></button>
+                    <div class="text-center">
+                        <button type="button" id="audio-call" class="btn btn-success"><i class="fa fa-2x fa-phone" aria-hidden="true"></i></button>
+                        <button type="button" id="video-call" class="btn btn-success"><i class="fa fa-2x fa-video-camera" aria-hidden="true"></i></button>
+                    </div>
+                </div>
+                <div class="modal-body" style="height: 400px;overflow-y: scroll">
+                    <div class="text-center col-md-12">
+                        <video id="other-video" class="other-video" autoplay></video>
+                        <video id="self-video" class="self-video" muted autoplay></video>
+                    </div>
+                    <div class="call-section calling end-call" id="call-section">
+                        <div class="text-center">
+                            <h3 id="show-call-text">Audio Calling....</h3>
+                            <h3 id="show-time" class="hide-time">00:00</h3>
+                            <button type="button" class="btn btn-danger" id="end-call">End Call</button>
+                        </div>
+                    </div>
+                    <div class="call-section calling end-video-call" id="video-call-section">
+                        <div class="text-center">
+                            <h3>Video Calling....</h3>
+                            <button type="button" class="btn btn-danger" id="end-video-call">End Call</button>
+                        </div>
+                    </div>
+                    <div class="call-section accept-reject-call" id="call-receive-section">
+                        <div class="text-center">
+                            <div class="text-center animated flash infinite" id="audio-calling-text"></div><br>
+                            <button class="btn btn-primary accept-call" id="accept-call">Accept</button>
+                            <button class="btn btn-danger reject-call" id="reject-call">Reject</button>
+                        </div>
+                    </div>
+                    <div class="call-section accept-reject-video-call" id="video-call-receive-section">
+                        <div class="text-center">
+                            <div class="text-center animated flash infinite" id="video-calling-text"></div><br>
+                            <button class="btn btn-primary accept-video-call" id="accept-video-call">Accept</button>
+                            <button class="btn btn-danger reject-video-call" id="reject-video-call">Reject</button>
+                        </div>
+                    </div>
+                    <ol id="private_messages_list" class="chat__messages"></ol>
+                    <div class="progress private-progress-hide" id="private-upload-progress-bar">
+                        <div class="progress-bar progress-bar-striped active" id="private-upload-progress-bar-inner" role="progressbar"
+                             aria-valuenow="10" aria-valuemin="0" aria-valuemax="100">
+                            0%
+                        </div>
+                    </div>
+                    <audio id="audioCalling" autoplay></audio>
+                </div>
+                <div class="modal-footer">
+                    <div class="chat__footer">
+                        <form id="private-message-form">
+                            <input name="private-message" type="text" placeholder="Message" autofocus autocomplete="off" required/>
+                            <button class="private-message-send">Send</button>
+                        </form>
+                        <button id="private-send-location">Send location</button> &nbsp; &nbsp;
+                        <input type="file" id="private-send-file"  style="display: none" accept="*/*">
+                        <button type="button" id="private-send-file-click"  onclick="upload_private_file()">Send File</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <ol id="messages" class="chat__messages">
+    <button type="button" id="show-people"><i class="fa fa-arrow-right" aria-hidden="true" id="change-arrow"></i>
+    </button>
+    </ol>
+    <div class="progress progress-hide" id="upload-progress-bar">
+        <div class="progress-bar progress-bar-striped active" role="progressbar" id="upload-progress-bar-inner"
+             aria-valuenow="10" aria-valuemin="0" aria-valuemax="100">
+            0%
+        </div>
+    </div>
+    <div class="chat__footer">
+        <form id="message-form">
+            <input name="message" type="text" placeholder="Message" autofocus autocomplete="off"/>
+            <button>Send</button>
+        </form>
+        <button id="send-location">Send location</button> &nbsp; &nbsp;
+        <input type="file" id="input-file" style="display: none" accept="*/*">
+        <button type="button" id="send-file" onclick="upload_file()">Send File</button>
+    </div>
+</div>
+<script id="private-message-template" type="text/template">
+    <li class="message">
+        <div class="message__title">
+            <h4>{{from}}</h4>
+            <span class="user-time">{{createdAt}}</span>
+        </div>
+        <div class="message__body">
+            <p>{{text}}</p>
+        </div>
+    </li>
+</script>
+<script id="message-template" type="text/template">
+    <li class="message">
+        <div class="message__title">
+            <h4>{{from}}</h4>
+            <span class="user-time">{{createdAt}}</span>
+        </div>
+        <div class="message__body">
+            <p>{{text}}</p>
+        </div>
+    </li>
+</script>
+
+<script id="location-message-template" type="text/template">
+    <li class="message">
+        <div class="message__title">
+            <h4>{{from}}</h4>
+            <span class="user-time">{{createdAt}}</span>
+        </div>
+        <div class="message__body">
+            <p>
+                <a href="{{url}}" target="_blank">My current location</a>
+            </p>
+        </div>
+    </li>
+</script>
+<script id="file-message-template" type="text/template">
+    <li class="message">
+        <div class="message__title">
+            <h4>{{from}}</h4>
+            <span class="user-time">{{createdAt}}</span>
+        </div>
+        <div class="message__body">
+            <p>
+                <a href="https://node-chat-application-ashikmahmud.c9users.io/data/{{url}}" target="_blank">{{url}}</a>
+            </p>
+        </div>
+    </li>
+</script>
+
+<script src="/js/libs/socket.io-file-client.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<!-- jQuery library -->
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+
+<!-- Latest compiled JavaScript -->
+<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
+<script src="/js/libs/moment.js"></script>
+<script src="/js/libs/mustache.js"></script>
+<script src="/js/libs/deparam.js"></script>
+<script src="/js/chat.js"></script>
+
+</body>
+
+</html>
