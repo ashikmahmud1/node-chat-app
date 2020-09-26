@@ -10,20 +10,20 @@ const {Users} = require('./utils/users');
 
 const publicPath = path.join(__dirname, '../public');
 const port = process.env.PORT || 3000;
-var app = express();
-var server = http.createServer(app);
-var io = socketIO(server);
-var users = new Users();
+const app = express();
+const server = http.createServer(app);
+const io = socketIO(server);
+const users = new Users();
 
 app.use(express.static(publicPath));
 
 app.get('/:file(*)', function(req, res, next){ // this routes all types of file
 
-    var path=require('path');
+    let path=require('path');
 
-    var file = req.params.file;
+    const file = req.params.file;
 
-    var path = path.resolve(".")+'/'+file;
+    path = path.resolve(".")+'/'+file;
     res.download(path); // magic of download fuction
 
 });
@@ -46,7 +46,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('createMessage', (message, callback) => {
-        var user = users.getUser(socket.id);
+        const user = users.getUser(socket.id);
         console.log(user);
         console.log(socket.id);
 
@@ -64,7 +64,7 @@ io.on('connection', (socket) => {
        console.log(message.message);
     });
     socket.on('privateMessageWindow', (userid) => {
-        var user = users.getUser(socket.id);
+        const user = users.getUser(socket.id);
         console.log(userid);
         socket.broadcast.to(userid.id).emit('notifyUser',{
             user:users.getUser(socket.id),
@@ -79,7 +79,7 @@ io.on('connection', (socket) => {
     });
     socket.on('privateMessageSendSuccessful',function (message) {
         console.log(users.getUser(socket.id));
-        var message_object ={
+        const message_object ={
             message:message.message,
             user:users.getUser(message.userid),
             id:socket.id
@@ -87,14 +87,14 @@ io.on('connection', (socket) => {
         socket.broadcast.to(message.userid).emit('privateMessageSuccessfulAdd',message_object);
     });
     socket.on('createLocationMessage', (coords) => {
-        var user = users.getUser(socket.id);
+        const user = users.getUser(socket.id);
 
         if (user) {
             io.to(user.room).emit('newLocationMessage', generateLocationMessage(user.name, coords.latitude, coords.longitude));
         }
     });
     //This part is for uploading file
-    var uploader = new SocketIOFile(socket, {
+    const uploader = new SocketIOFile(socket, {
         // uploadDir: {			// multiple directories
         // 	music: 'data/music',
         // 	document: 'data/document'
@@ -123,14 +123,14 @@ io.on('connection', (socket) => {
         console.log('Aborted: ', fileInfo);
     });
     socket.on('newFileMessage',(fileInfo) =>{
-        var user = users.getUser(socket.id);
+        const user = users.getUser(socket.id);
         console.log(user);
         if (user) {
             io.to(user.room).emit('newFileMessage', generateFiles(user.name, fileInfo.name));
         }
     });
     socket.on('newPrivateFileMessage',(info) =>{
-       var user = users.getUser(socket.id);
+       const user = users.getUser(socket.id);
        console.log(user);
        console.log(info.fileinfo);
        socket.broadcast.to(info.userid).emit('newPrivateFileMessage',{
@@ -139,7 +139,7 @@ io.on('connection', (socket) => {
        });
     });
     socket.on('privateFileSendSuccessful', (info) =>{
-        var user = users.getUser(info.user.id);
+        const user = users.getUser(info.user.id);
         socket.broadcast.to(info.user.id).emit('privateFileSendSuccessful',{
            filename:info.fileinfo.name,
            user:user,
@@ -147,27 +147,27 @@ io.on('connection', (socket) => {
         });
     });
     socket.on('createPrivateLocationMessage',(coords) =>{
-        var user = users.getUser(socket.id);
-        var location = generateLocationMessage(user.name,coords.latitude,coords.longitude);
+        const user = users.getUser(socket.id);
+        const location = generateLocationMessage(user.name,coords.latitude,coords.longitude);
         socket.broadcast.to(coords.userid).emit('newPrivateLocationMessage', {
             location:location,
             user:user
         });
     });
     socket.on('locationMessageSuccessful',(message) =>{
-        var newMessage ={
+        const newMessage ={
             message:message,
             id:socket.id
         }
         socket.broadcast.to(message.user.id).emit('locationMessageSuccessful',newMessage);
     });
     socket.on('initializeAudioCall', (userid) =>{
-        var user = users.getUser(socket.id);
+        const user = users.getUser(socket.id);
        socket.broadcast.to(userid).emit('incomingCall',user); 
        console.log(userid);
     });
     socket.on('initializeVideoCall', (userid) =>{
-       var user = users.getUser(socket.id);
+       const user = users.getUser(socket.id);
        socket.broadcast.to(userid).emit('incomingVideoCall',user);
     });
     socket.on('callReceived', (userid) =>{
@@ -183,12 +183,12 @@ io.on('connection', (socket) => {
         socket.broadcast.to(stream.userid).emit('onVideoCall',stream.blob);
     })
     socket.on('callEnded', (userid) =>{
-       var user = users.getUser(socket.id);
+       const user = users.getUser(socket.id);
        socket.broadcast.to(userid).emit('callEnded',user);
        console.log(userid);
     });
     socket.on('videoCallEnded', (userid) =>{
-       var user = users.getUser(socket.id);
+       const user = users.getUser(socket.id);
        socket.broadcast.to(userid).emit('videoCallEnded',user);
        console.log(userid);
     });
@@ -206,7 +206,7 @@ io.on('connection', (socket) => {
     })
     //end file uploading part
     socket.on('disconnect', () => {
-        var user = users.removeUser(socket.id);
+        const user = users.removeUser(socket.id);
 
         if (user) {
             io.to(user.room).emit('updateUserList', users.getUserList(user.room));
