@@ -1,7 +1,7 @@
 const path = require('path');
 const http = require('http');
 const express = require('express');
-const socketIO = require('socket.io');
+const { Server } = require("socket.io");
 const SocketIOFile = require('socket.io-file');
 
 const {generateMessage, generateLocationMessage,generateFiles} = require('./utils/message');
@@ -11,8 +11,8 @@ const {Users} = require('./utils/users');
 const publicPath = path.join(__dirname, '../public');
 const port = process.env.PORT || 3000;
 const app = express();
-const server = http.createServer(app);
-const io = socketIO(server);
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, { /* options */ });
 const users = new Users();
 
 app.use(express.static(publicPath));
@@ -215,6 +215,6 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(port, () => {
+httpServer.listen(port, () => {
     console.log(`Server is up on ${port}`);
 });

@@ -1,1 +1,10 @@
 node_modules/
+build
+npm-debug.log
+.nyc
+.env
+.DS_Store
+
+#IDE
+.idea
+.vscode

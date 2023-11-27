@@ -5,23 +5,22 @@
   "main": "index.js",
   "scripts": {
     "start": "node server/server.js",
+    "dev": "nodemon server/server.js",
     "test": "mocha server/**/*.test.js",
     "test-watch": "nodemon --exec 'npm test'"
   },
   "engines": {
-    "node": "7.9.0"
+    "node": "20.10.0"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "express": "^4.14.0",
-    "moment": "^2.15.1",
-    "socket.io": "^1.4.8",
-    "socket.io-file": "^2.0.14"
+    "express": "^4.18.2",
+    "moment": "^2.29.4",
+    "socket.io": "^4.7.2",
+    "socket.io-file": "^2.0.31"
   },
   "devDependencies": {
-    "expect": "^1.20.2",
-    "mocha": "^3.0.2",
-    "nodemon": "^1.10.2"
+    "nodemon": "^3.0.1"
   }
 }
