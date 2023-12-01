@@ -2,11 +2,11 @@ const path = require('path');
 const http = require('http');
 const express = require('express');
 const { Server } = require("socket.io");
-const SocketIOFile = require('socket.io-file');
 
 const {generateMessage, generateLocationMessage,generateFiles} = require('./utils/message');
 const {isRealString} = require('./utils/validation');
 const {Users} = require('./utils/users');
+const {upload} = require("./middlewares/file-upload");
 
 const publicPath = path.join(__dirname, '../public');
 const port = process.env.PORT || 3000;
@@ -24,9 +24,21 @@ app.get('/:file(*)', function(req, res, next){ // this routes all types of file
     const file = req.params.file;
 
     path = path.resolve(".")+'/'+file;
-    res.download(path); // magic of download fuction
+    res.download(path); // magic of download function
 
 });
+
+// Handle file upload route
+app.post('/upload', upload.single('file'), (req, res, next) => {
+    // Access uploaded file information using req.file
+    // Example: req.file.location contains the URL of the uploaded file in S3
+    if (!req.file) {
+        // here send error
+    }
+
+    res.send({file: req.file});
+});
+
 io.on('connection', (socket) => {
     console.log('New user connected');
 
@@ -94,54 +106,27 @@ io.on('connection', (socket) => {
         }
     });
     //This part is for uploading file
-    const uploader = new SocketIOFile(socket, {
-        // uploadDir: {			// multiple directories
-        // 	music: 'data/music',
-        // 	document: 'data/document'
-        // },
-        uploadDir: 'data',							// simple directory,		// chrome and some of browsers checking mp3 as 'audio/mp3', not 'audio/mpeg'
-        maxFileSize: 4194304, 						// 4 MB. default is undefined(no limit)
-        chunkSize: 10240,							// default is 10240(1KB)
-        transmissionDelay: 0,						// delay of each transmission, higher value saves more cpu resources, lower upload speed. default is 0(no delay)
-        overwrite: true 							// overwrite file if exists, default is true.
-    });
-    uploader.on('start', (fileInfo) => {
-        console.log('Start uploading');
-        console.log(fileInfo);
-    });
-    uploader.on('stream', (fileInfo) => {
-        console.log(`${fileInfo.wrote} / ${fileInfo.size} byte(s)`);
-    });
-    uploader.on('complete', (fileInfo) => {
-        console.log('Upload Complete.');
-        console.log(fileInfo);
-    });
-    uploader.on('error', (err) => {
-        console.log('Error!', err);
-    });
-    uploader.on('abort', (fileInfo) => {
-        console.log('Aborted: ', fileInfo);
-    });
     socket.on('newFileMessage',(fileInfo) =>{
+        console.log(fileInfo);
         const user = users.getUser(socket.id);
         console.log(user);
         if (user) {
-            io.to(user.room).emit('newFileMessage', generateFiles(user.name, fileInfo.name));
+            io.to(user.room).emit('newFileMessage', generateFiles(user.name, fileInfo.filename));
         }
     });
     socket.on('newPrivateFileMessage',(info) =>{
        const user = users.getUser(socket.id);
        console.log(user);
-       console.log(info.fileinfo);
+       console.log(info.fileInfo);
        socket.broadcast.to(info.userid).emit('newPrivateFileMessage',{
            user:user,
-           fileinfo:info.fileinfo
+           fileInfo:info.fileInfo
        });
     });
     socket.on('privateFileSendSuccessful', (info) =>{
         const user = users.getUser(info.user.id);
         socket.broadcast.to(info.user.id).emit('privateFileSendSuccessful',{
-           filename:info.fileinfo.name,
+           filename:info.fileInfo.filename,
            user:user,
            id:socket.id
         });

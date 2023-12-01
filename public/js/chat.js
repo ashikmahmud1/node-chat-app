@@ -52,7 +52,6 @@ var user_message_dictionary = {};
 var progress_bar = document.getElementById('upload-progress-bar');
 var progress_bar_inner = document.getElementById('upload-progress-bar-inner');
 //File upload client side start
-var uploader = new SocketIOFileClient(socket);
 var private_btn_id = document.getElementsByClassName('private-message-send');
 
 //Modal close button
@@ -61,87 +60,12 @@ var modal_close_button = document.getElementsByClassName('close');
 var private_progress_bar = document.getElementById('private-upload-progress-bar');
 var private_progress_bar_inner = document.getElementById('private-upload-progress-bar-inner');
 var message_audio = document.getElementById('message-received');
-uploader.on('start', function(fileInfo) {
-    if (private_btn_id[0].id == '') {
-        console.log('Start uploading', fileInfo);
-        progress_bar.classList.remove('progress-hide');
-        console.log('this is private_btn_id' + private_btn_id);
-    }
-    else {
-        //disable the modal close button
-        modal_close_button[0].setAttribute('disabled', 'disabled')
-        //show the private progress bar.
-        private_progress_bar.classList.remove('private-progress-hide');
-    }
-});
-uploader.on('stream', function(fileInfo) {
-    var percentComplete = fileInfo.sent / fileInfo.size;
-    percentComplete = parseInt(percentComplete * 100);
-    var width = 'width:' + percentComplete + '%';
-    if (private_btn_id[0].id == '') {
-        progress_bar_inner.setAttribute('style', width);
-        progress_bar_inner.innerHTML = percentComplete + ' %';
-    }
-    else {
-        private_progress_bar_inner.setAttribute('style', width);
-        private_progress_bar_inner.innerHTML = percentComplete + ' %'
-    }
-});
-uploader.on('complete', function(fileInfo) {
-    if (private_btn_id[0].id == '') {
-        console.log('Upload Complete', fileInfo);
-        progress_bar.classList.add('progress-hide');
-        //emit an event for public chat message
-        socket.emit('newFileMessage', fileInfo);
-        console.log(private_btn_id);
-    }
-    else {
-        //hide the progress bar
-        private_progress_bar.classList.add('private-progress-hide');
 
-        //slice the private button id
-        var userid = private_btn_id[0].id.slice(0, -1);
-        //upload complete now emit an event for specific user
-        socket.emit('newPrivateFileMessage', {
-            fileinfo: fileInfo,
-            userid: userid
-        });
-        //enable the modal close button
-        modal_close_button[0].removeAttribute('disabled');
-    }
-
-});
-
-uploader.on('error', function(err) {
-    if (private_btn_id[0].id == '') {
-        progress_bar.classList.add('progress-hide');
-        console.log('Error!', err);
-    }
-    else {
-        //hide the progress bar
-        private_progress_bar.classList.add('private-progress-hide');
-        //enable the modal close button
-        modal_close_button[0].disable = false;
-    }
-
-});
-uploader.on('abort', function(fileInfo) {
-    if (private_btn_id[0].id == '') {
-        progress_bar.classList.add('progress-hide');
-        console.log('Error!', err);
-    }
-    else {
-        //hide the progress bar
-        private_progress_bar.classList.add('private-progress-hide');
-        //enable the modal close button
-        modal_close_button[0].disable = false;
-    }
-});
 socket.on('newPrivateFileMessage', function(info) {
     var formattedTime = moment(info.createdAt).format('h:mm a');
     var message_object = {
         from: info.user.name,
-        url: info.fileinfo.name,
+        url: info.fileInfo.filename,
         createdAt: formattedTime,
         type: 'file'
     }
@@ -155,7 +79,7 @@ socket.on('newPrivateFileMessage', function(info) {
         var template = jQuery('#file-message-template').html();
         var html = Mustache.render(template, {
             from: info.user.name,
-            url: info.fileinfo.name,
+            url: info.fileInfo.filename,
             createdAt: formattedTime
         });
 
@@ -206,6 +130,7 @@ window.addEventListener('load', function() {
     $('#myModal').modal('hide');
 });
 socket.on('newFileMessage', function(message) {
+    console.log(message);
     var formattedTime = moment(message.createdAt).format('h:mm a');
     var template = jQuery('#file-message-template').html();
     var html = Mustache.render(template, {
@@ -219,17 +144,100 @@ socket.on('newFileMessage', function(message) {
     console.log('This is file url ' + message.fileurl);
 });
 
+function uploadFile(fileEl) {
+    var formData = new FormData();
+    formData.append('file', fileEl.files[0]);
+
+    $.ajax({
+        url: '/upload',
+        type: 'POST',
+        data: formData,
+        processData: false,
+        contentType: false,
+        xhr: function() {
+            var xhr = new window.XMLHttpRequest();
+            if (private_btn_id[0].id === '') {
+                progress_bar.classList.remove('progress-hide');
+            }
+            else {
+                //disable the modal close button
+                modal_close_button[0].setAttribute('disabled', 'disabled')
+                //show the private progress bar.
+                private_progress_bar.classList.remove('private-progress-hide');
+            }
+            // Listen to the upload progress
+            xhr.upload.addEventListener('progress', function(e) {
+                if (e.lengthComputable) {
+                    var percent = (e.loaded / e.total) * 100;
+                    // $('#progressBar').width(percent + '%');
+                    // $('#progressText').text(percent.toFixed(2) + '%');
+                    console.log(percent);
+                    var width = 'width:' + percent + '%';
+                    if (private_btn_id[0].id === '') {
+                        progress_bar_inner.setAttribute('style', width);
+                        progress_bar_inner.innerHTML = percent.toFixed(2) + ' %';
+                    }
+                    else {
+                        private_progress_bar_inner.setAttribute('style', width);
+                        private_progress_bar_inner.innerHTML = percent.toFixed(2) + ' %'
+                    }
+                }
+            });
+
+            return xhr;
+        },
+        success: function(fileData) {
+            var fileInfo = fileData.file;
+            if (private_btn_id[0].id === '') {
+                console.log('Upload Complete', fileInfo);
+                progress_bar.classList.add('progress-hide');
+                //emit an event for public chat message
+                socket.emit('newFileMessage', fileInfo);
+                console.log(private_btn_id);
+            }
+            else {
+                //hide the progress bar
+                private_progress_bar.classList.add('private-progress-hide');
+
+                //slice the private button id
+                var userid = private_btn_id[0].id.slice(0, -1);
+                console.log({
+                    fileInfo: fileInfo,
+                    userid: userid
+                })
+                //upload complete now emit an event for specific user
+                socket.emit('newPrivateFileMessage', {
+                    fileInfo: fileInfo,
+                    userid: userid
+                });
+                //enable the modal close button
+                modal_close_button[0].removeAttribute('disabled');
+            }
+        },
+        error: function(err) {
+            console.error('Error uploading file:', err);
+        },
+        complete: function() {
+            progress_bar.classList.add('progress-hide');
+            private_progress_bar.classList.add('private-progress-hide');
+        }
+    });
+
+    // Show the progress bar
+    // $('#progressWrapper').show();
+}
 $('#input-file').on('change', function(event) {
     console.log(event.target.files[0].name);
     var fileEl = document.getElementById('input-file');
-    uploader.upload(fileEl);
+    uploadFile(fileEl);
+
 
 });
 //private file upload
 $('#private-send-file').on('change', function(event) {
     console.log(event.target.files[0].name);
     var fileEl = document.getElementById('private-send-file');
-    uploader.upload(fileEl);
+    uploadFile(fileEl);
 });
 //file upload client side end
 function upload_file() {

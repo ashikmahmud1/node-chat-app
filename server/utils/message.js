@@ -15,8 +15,8 @@ var generateLocationMessage = (from, latitude, longitude) => {
     createdAt: moment().valueOf()
   };
 };
-var generateFiles = (from,fileurl) =>{
-  return{from, fileurl,createdAt: moment().valueOf()};
+var generateFiles = (from,fileUrl) =>{
+  return{from, fileUrl,createdAt: moment().valueOf()};
 };
 
 module.exports = {generateMessage, generateLocationMessage,generateFiles};
