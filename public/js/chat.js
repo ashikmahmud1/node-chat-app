@@ -20,12 +20,18 @@ var calling = false;
 var caller_id = '';
 var video_caller_id = '';
 var callTimerTimeout = null;
+var ringTimeout = null;
+var videoRingTimeout = null;
 var audio_message = null;
 var activeMediaStream = null;
 var activeMediaRecorder = null;
 
 // Dictionary storing private message history per user ID
 var user_message_dictionary = {};
+// Persistent unread badge counter per user ID (survives updateUserList re-renders)
+var unread_counts = {};
+// Map of active users in the room by socket ID
+var room_users_map = {};
 
 // DOM Elements
 var progress_bar = document.getElementById('upload-progress-bar');
@@ -46,13 +52,44 @@ function playNotificationSound() {
   }
 }
 
-function incrementUnreadBadge(userId) {
+function updateUnreadBadgeDOM(userId) {
   var userBtn = document.getElementById(userId);
   if (!userBtn || !userBtn.nextSibling) return;
   var label = userBtn.nextSibling;
-  var currentCount = parseInt(label.innerHTML, 10) || 0;
-  label.setAttribute('style', 'display:block');
-  label.innerHTML = String(currentCount + 1);
+  var count = unread_counts[userId] || 0;
+  if (count > 0) {
+    label.setAttribute('style', 'display:block');
+    label.innerHTML = String(count);
+  } else {
+    label.setAttribute('style', 'display:none');
+    label.innerHTML = '';
+  }
+}
+
+function incrementUnreadBadge(userId) {
+  if (!userId) return;
+  unread_counts[userId] = (unread_counts[userId] || 0) + 1;
+  updateUnreadBadgeDOM(userId);
+}
+
+function clearUnreadBadge(userId) {
+  if (!userId) return;
+  unread_counts[userId] = 0;
+  updateUnreadBadgeDOM(userId);
+}
+
+function clearRingTimeout() {
+  if (ringTimeout) {
+    clearTimeout(ringTimeout);
+    ringTimeout = null;
+  }
+}
+
+function clearVideoRingTimeout() {
+  if (videoRingTimeout) {
+    clearTimeout(videoRingTimeout);
+    videoRingTimeout = null;
+  }
 }
 
 function update() {
@@ -128,6 +165,15 @@ function getActivePrivateUserId() {
   return '';
 }
 
+function openPrivateModalForUser(userId, userName) {
+  if (!userId) return;
+  private_btn_id[0].setAttribute('id', userId + '0');
+  document.getElementsByClassName('modal-title')[0].innerHTML = userName || 'Private Chat';
+  clearUnreadBadge(userId);
+  renderPrivateMessages(userId);
+  $('#myModal').modal('show');
+}
+
 function renderPrivateMessages(userId) {
   var $list = jQuery('#private_messages_list');
   $list.empty();
@@ -164,7 +210,33 @@ function renderPrivateMessages(userId) {
     }
     $list.append(html);
   }
+  if (!calling) {
+    privateScrollToBottom();
+  }
 }
+
+// Allow clicking the incoming call alert banner to switch directly to the caller's modal
+$('#alert-box').on('click', function () {
+  var pendingCallerId = caller_id || video_caller_id;
+  if (!pendingCallerId || !room_users_map[pendingCallerId]) return;
+  var callerUser = room_users_map[pendingCallerId];
+  openPrivateModalForUser(callerUser.id, callerUser.name);
+  $('#alert-box').addClass('alert-hide');
+
+  if (caller_id === pendingCallerId) {
+    document.getElementById('audio-calling-text').innerHTML = callerUser.name + ' Calling......';
+    $('#call-receive-section').removeClass('accept-reject-call');
+    $('#audio-call').attr('disabled', true);
+    $('#video-call').attr('disabled', true);
+    modal_close_button[0].setAttribute('disabled', 'disabled');
+  } else if (video_caller_id === pendingCallerId) {
+    document.getElementById('video-calling-text').innerHTML = callerUser.name + ' Video Calling......';
+    $('#video-call-receive-section').removeClass('accept-reject-video-call');
+    $('#audio-call').attr('disabled', true);
+    $('#video-call').attr('disabled', true);
+    modal_close_button[0].setAttribute('disabled', 'disabled');
+  }
+});
 
 socket.on('newPrivateFileMessage', function (info) {
   var formattedTime = moment(info.createdAt).format('h:mm a');
@@ -209,16 +281,18 @@ socket.on('privateFileSendSuccessful', function (info) {
   };
   add_message(message_object, info.id);
 
-  var template = jQuery('#file-message-template').html();
-  var html = Mustache.render(template, {
-    from: info.user.name,
-    url: info.filename,
-    createdAt: formattedTime,
-  });
+  if (getActivePrivateUserId() === info.id) {
+    var template = jQuery('#file-message-template').html();
+    var html = Mustache.render(template, {
+      from: info.user.name,
+      url: info.filename,
+      createdAt: formattedTime,
+    });
 
-  jQuery('#private_messages_list').append(html);
-  if (!calling) {
-    privateScrollToBottom();
+    jQuery('#private_messages_list').append(html);
+    if (!calling) {
+      privateScrollToBottom();
+    }
   }
 });
 
@@ -299,6 +373,7 @@ function uploadFile(fileEl) {
       if (modal_close_button[0]) {
         modal_close_button[0].removeAttribute('disabled');
       }
+      alert('Failed to upload file. Please try again.');
     },
     complete: function () {
       progress_bar.classList.add('progress-hide');
@@ -343,21 +418,21 @@ function private_chat(event) {
   var id = event.target.id;
   if (!id || id === socket.id) return;
 
-  var userid = document.getElementById(id);
+  var targetUser = room_users_map[id];
+  var targetName = targetUser ? targetUser.name : 'Private Chat';
+
+  // Immediately open modal for the selected user
+  openPrivateModalForUser(id, targetName);
 
   if (caller_id === id) {
+    document.getElementById('audio-calling-text').innerHTML = targetName + ' Calling......';
     $('#call-receive-section').removeClass('accept-reject-call');
+    $('#alert-box').addClass('alert-hide');
   }
   if (video_caller_id === id) {
+    document.getElementById('video-calling-text').innerHTML = targetName + ' Video Calling......';
     $('#video-call-receive-section').removeClass('accept-reject-video-call');
-  }
-
-  renderPrivateMessages(id);
-
-  if (userid && userid.nextSibling) {
-    var label = userid.nextSibling;
-    label.setAttribute('style', 'display:none');
-    label.innerHTML = '';
+    $('#alert-box').addClass('alert-hide');
   }
 
   socket.emit('privateMessageWindow', {
@@ -371,9 +446,12 @@ socket.on('disconnect', function () {
 
 socket.on('updateUserList', function (users) {
   var userfound = false;
+  var activePrivateId = getActivePrivateUserId();
   var ol = jQuery('<ol></ol>');
+  room_users_map = {};
 
   users.forEach(function (user) {
+    room_users_map[user.id] = user;
     var isSelf = user.id === socket.id;
     var displayName = isSelf ? user.name + ' (You)' : user.name;
     var list = $('<li></li>').text(displayName);
@@ -388,23 +466,41 @@ socket.on('updateUserList', function (users) {
 
       var label = document.createElement('label');
       label.setAttribute('class', 'new-message');
+      var unread = unread_counts[user.id] || 0;
+      if (unread > 0) {
+        label.setAttribute('style', 'display:block');
+        label.innerHTML = String(unread);
+      }
 
       list.append(button);
       list.append(label);
     }
 
-    if (calling) {
-      var activeId = getActivePrivateUserId();
-      if (activeId === user.id) {
-        userfound = true;
-      }
+    if (activePrivateId && activePrivateId === user.id) {
+      userfound = true;
     }
   });
 
-  if (!userfound && calling) {
-    end_call();
-    end_video_call();
-    calling = false;
+  // Clean up pending call alerts if the caller disconnected
+  if (caller_id && !room_users_map[caller_id]) {
+    clearRingTimeout();
+    caller_id = '';
+    $('#call-receive-section').addClass('accept-reject-call');
+    $('#alert-box').addClass('alert-hide');
+  }
+  if (video_caller_id && !room_users_map[video_caller_id]) {
+    clearVideoRingTimeout();
+    video_caller_id = '';
+    $('#video-call-receive-section').addClass('accept-reject-video-call');
+    $('#alert-box').addClass('alert-hide');
+  }
+
+  if (activePrivateId && !userfound) {
+    if (calling) {
+      end_call();
+      end_video_call();
+      calling = false;
+    }
   }
 
   jQuery('#users').html(ol);
@@ -413,14 +509,8 @@ socket.on('updateUserList', function (users) {
 
 socket.on('notifyUser', function (data) {
   if (!data || !data.user) return;
-  var private_message_button = document.getElementsByClassName('private-message-send');
-
-  if (private_message_button[0].id === '') {
-    var set_id = data.user.id + '0';
-    private_message_button[0].setAttribute('id', set_id);
-    document.getElementsByClassName('modal-title')[0].innerHTML = data.user.name;
-    renderPrivateMessages(data.user.id);
-    $('#myModal').modal('show');
+  if (getActivePrivateUserId() === '') {
+    openPrivateModalForUser(data.user.id, data.user.name);
     playNotificationSound();
   }
 
@@ -432,11 +522,9 @@ socket.on('notifyUser', function (data) {
 
 socket.on('openChatWindow', function (data) {
   if (!data || !data.user) return;
-  var set_id = data.user.id + '0';
-  document.getElementsByClassName('private-message-send')[0].setAttribute('id', set_id);
-  document.getElementsByClassName('modal-title')[0].innerHTML = data.user.name;
-  renderPrivateMessages(data.user.id);
-  $('#myModal').modal('show');
+  if (getActivePrivateUserId() !== data.user.id) {
+    openPrivateModalForUser(data.user.id, data.user.name);
+  }
 });
 
 document.getElementsByClassName('close')[0].addEventListener('click', function () {
@@ -515,15 +603,17 @@ socket.on('privateMessageSuccessfulAdd', function (message) {
   };
   add_message(message_object, message.id);
 
-  var template = jQuery('#private-message-template').html();
-  var html = Mustache.render(template, {
-    text: message.message,
-    from: message.user.name,
-    createdAt: formattedTime,
-  });
-  jQuery('#private_messages_list').append(html);
-  if (!calling) {
-    privateScrollToBottom();
+  if (getActivePrivateUserId() === message.id) {
+    var template = jQuery('#private-message-template').html();
+    var html = Mustache.render(template, {
+      text: message.message,
+      from: message.user.name,
+      createdAt: formattedTime,
+    });
+    jQuery('#private_messages_list').append(html);
+    if (!calling) {
+      privateScrollToBottom();
+    }
   }
 });
 
@@ -664,15 +754,17 @@ socket.on('locationMessageSuccessful', function (message) {
   };
   add_message(message_object, message.id);
 
-  var template = jQuery('#location-message-template').html();
-  var html = Mustache.render(template, {
-    from: message.message.location.from,
-    url: message.message.location.url,
-    createdAt: formattedTime,
-  });
-  jQuery('#private_messages_list').append(html);
-  if (!calling) {
-    privateScrollToBottom();
+  if (getActivePrivateUserId() === message.id) {
+    var template = jQuery('#location-message-template').html();
+    var html = Mustache.render(template, {
+      from: message.message.location.from,
+      url: message.message.location.url,
+      createdAt: formattedTime,
+    });
+    jQuery('#private_messages_list').append(html);
+    if (!calling) {
+      privateScrollToBottom();
+    }
   }
 });
 
@@ -682,7 +774,8 @@ socket.on('onAudioCall', function (arrayBuffer) {
 });
 
 $('#accept-call').on('click', function () {
-  var userid = getActivePrivateUserId() || caller_id;
+  clearRingTimeout();
+  var userid = caller_id || getActivePrivateUserId();
   socket.emit('callReceived', userid);
   $('#call-receive-section').addClass('accept-reject-call');
   $('#call-section').removeClass('end-call');
@@ -703,20 +796,24 @@ $('#accept-call').on('click', function () {
 });
 
 $('#reject-call').on('click', function () {
-  var userid = getActivePrivateUserId() || caller_id;
+  var userid = caller_id || getActivePrivateUserId();
   reject_call(userid);
 });
 
 function hide_receive_section(userid) {
-  setTimeout(function () {
-    if (!calling) {
+  clearRingTimeout();
+  ringTimeout = setTimeout(function () {
+    if (!calling && caller_id === userid) {
       reject_call(userid);
     }
   }, 18000);
 }
 
 function reject_call(userid) {
-  socket.emit('callNotReceived', userid);
+  clearRingTimeout();
+  if (userid) {
+    socket.emit('callNotReceived', userid);
+  }
   $('#call-receive-section').addClass('accept-reject-call');
   $('#audio-call').attr('disabled', false);
   $('#video-call').attr('disabled', false);
@@ -740,16 +837,26 @@ $('#audio-call').on('click', function () {
 socket.on('incomingCall', function (user) {
   if (!user) return;
   if (!calling) {
-    var id = getActivePrivateUserId();
-    if (id !== user.id) {
+    caller_id = user.id;
+    document.getElementById('audio-calling-text').innerHTML = user.name + ' Calling......';
+    playNotificationSound();
+
+    var activeId = getActivePrivateUserId();
+    if (activeId === '') {
+      // Automatically open caller's modal so user can immediately Accept or Reject
+      openPrivateModalForUser(user.id, user.name);
+      $('#call-receive-section').removeClass('accept-reject-call');
+      $('#audio-call').attr('disabled', true);
+      $('#video-call').attr('disabled', true);
+      modal_close_button[0].setAttribute('disabled', 'disabled');
+    } else if (activeId !== user.id) {
       $('#alert-box').removeClass('alert-hide');
-      document.getElementsByClassName('alert-text')[0].innerHTML = user.name + ' Calling......';
-      caller_id = user.id;
+      document.getElementsByClassName('alert-text')[0].innerHTML =
+        user.name + ' Calling... (Click to answer)';
     } else {
       $('#call-receive-section').removeClass('accept-reject-call');
       $('#audio-call').attr('disabled', true);
       $('#video-call').attr('disabled', true);
-      document.getElementById('audio-calling-text').innerHTML = user.name + ' Calling......';
       modal_close_button[0].setAttribute('disabled', 'disabled');
     }
 
@@ -822,6 +929,7 @@ socket.on('callEnded', function () {
 function end_call() {
   calling = false;
   caller_id = '';
+  clearRingTimeout();
   stopCallTimer();
   stopMediaStream();
 
@@ -829,6 +937,8 @@ function end_call() {
   $('#video-call').attr('disabled', false);
   modal_close_button[0].removeAttribute('disabled');
   $('#call-section').addClass('end-call');
+  $('#call-receive-section').addClass('accept-reject-call');
+  $('#alert-box').addClass('alert-hide');
 }
 
 socket.on('callNotReceived', function () {
@@ -879,13 +989,23 @@ $('#video-call').on('click', function () {
 socket.on('incomingVideoCall', function (user) {
   if (!user) return;
   if (!calling) {
-    var id = getActivePrivateUserId();
-    if (id !== user.id) {
+    video_caller_id = user.id;
+    document.getElementById('video-calling-text').innerHTML = user.name + ' Video Calling......';
+    playNotificationSound();
+
+    var activeId = getActivePrivateUserId();
+    if (activeId === '') {
+      // Automatically open caller's modal so user can immediately Accept or Reject
+      openPrivateModalForUser(user.id, user.name);
+      $('#video-call-receive-section').removeClass('accept-reject-video-call');
+      $('#audio-call').attr('disabled', true);
+      $('#video-call').attr('disabled', true);
+      modal_close_button[0].setAttribute('disabled', 'disabled');
+    } else if (activeId !== user.id) {
       $('#alert-box').removeClass('alert-hide');
-      document.getElementsByClassName('alert-text')[0].innerHTML = user.name + ' Video Calling......';
-      video_caller_id = user.id;
+      document.getElementsByClassName('alert-text')[0].innerHTML =
+        user.name + ' Video Calling... (Click to answer)';
     } else {
-      document.getElementById('video-calling-text').innerHTML = user.name + ' Video Calling......';
       $('#video-call-receive-section').removeClass('accept-reject-video-call');
       $('#audio-call').attr('disabled', true);
       $('#video-call').attr('disabled', true);
@@ -904,7 +1024,8 @@ socket.on('userVideoBusy', function () {
 });
 
 $('#accept-video-call').on('click', function () {
-  var userid = getActivePrivateUserId() || video_caller_id;
+  clearVideoRingTimeout();
+  var userid = video_caller_id || getActivePrivateUserId();
   socket.emit('videoCallReceived', userid);
   $('#video-call-receive-section').addClass('accept-reject-video-call');
   $('#video-call-section').removeClass('end-video-call');
@@ -981,20 +1102,24 @@ socket.on('onVideoCall', function (arrayBuffer) {
 });
 
 $('#reject-video-call').on('click', function () {
-  var userid = getActivePrivateUserId() || video_caller_id;
+  var userid = video_caller_id || getActivePrivateUserId();
   reject_video_call(userid);
 });
 
 function hide_video_section(userid) {
-  setTimeout(function () {
-    if (!calling) {
+  clearVideoRingTimeout();
+  videoRingTimeout = setTimeout(function () {
+    if (!calling && video_caller_id === userid) {
       reject_video_call(userid);
     }
   }, 18000);
 }
 
 function reject_video_call(userid) {
-  socket.emit('videoCallNotReceived', userid);
+  clearVideoRingTimeout();
+  if (userid) {
+    socket.emit('videoCallNotReceived', userid);
+  }
   $('#video-call-receive-section').addClass('accept-reject-video-call');
   $('#audio-call').attr('disabled', false);
   $('#video-call').attr('disabled', false);
@@ -1010,6 +1135,7 @@ socket.on('videoCallNotReceived', function () {
 function end_video_call() {
   calling = false;
   video_caller_id = '';
+  clearVideoRingTimeout();
   stopCallTimer();
   stopMediaStream();
 
@@ -1017,7 +1143,9 @@ function end_video_call() {
   $('#video-call').attr('disabled', false);
   modal_close_button[0].removeAttribute('disabled');
   $('#video-call-section').addClass('end-video-call');
+  $('#video-call-receive-section').addClass('accept-reject-video-call');
   $('#other-video').addClass('other-video');
+  $('#alert-box').addClass('alert-hide');
 }
 
 $('#end-video-call').on('click', function () {

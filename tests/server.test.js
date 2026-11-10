@@ -104,15 +104,15 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
       expect(res.body).toEqual({ error: 'No file provided for upload.' });
     });
 
-    it('uploadFile should return 200 with uploaded file metadata', () => {
-      const fakeFile = { filename: '12345-test.png', originalname: 'test.png' };
+    it('uploadFile should return 200 with uploaded file metadata and normalize S3 key', () => {
+      const fakeFile = { key: '12345-s3.png', originalname: 's3.png' };
       const req = { file: fakeFile };
       const res = createMockRes();
 
       uploadFile(req, res);
 
       expect(res.statusCode).toBe(200);
-      expect(res.body).toEqual({ file: fakeFile });
+      expect(res.body.file.filename).toBe('12345-s3.png');
     });
 
     it('downloadFile should block path traversal attempts with 400', () => {
@@ -172,15 +172,16 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
   });
 
   describe('Socket.IO Chat, Private & Call Handlers', () => {
-    it('should validate join parameters and broadcast room join events', () => {
+    it('should validate join parameters, reject duplicate usernames in same room, and normalize room case', () => {
       const { createSocket, emitted, broadcasted, users } = createMockSocketEnv();
       const socketA = createSocket('socket-a');
+      const socketB = createSocket('socket-b');
 
       let joinError = null;
       socketA.trigger('join', { name: '   ', room: 'General' }, (err) => {
         joinError = err;
       });
-      expect(joinError).toBe('Name and room name are required.');
+      expect(joinError).toContain('Valid display name and room name');
 
       let successErr = 'not-called';
       socketA.trigger('join', { name: 'Ashik', room: 'DevRoom' }, (err) => {
@@ -198,10 +199,25 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
       expect(socketA.directEmits[0].data.text).toBe('Welcome to the chat app');
       expect(broadcasted[0].event).toBe('newMessage');
       expect(broadcasted[0].data.text).toBe('Ashik has joined.');
+
+      // Duplicate username in same room (case-insensitive) should be rejected
+      let duplicateErr = null;
+      socketB.trigger('join', { name: 'ashik', room: 'devroom' }, (err) => {
+        duplicateErr = err;
+      });
+      expect(duplicateErr).toContain('already in use');
+
+      // Different username joining 'devroom' should join canonical 'DevRoom'
+      let secondJoinErr = 'not-called';
+      socketB.trigger('join', { name: 'Jen', room: 'devroom' }, (err) => {
+        secondJoinErr = err;
+      });
+      expect(secondJoinErr).toBeUndefined();
+      expect(users.getUser('socket-b').room).toBe('DevRoom');
     });
 
-    it('should handle public messages, location messages, and file messages', () => {
-      const { createSocket, emitted } = createMockSocketEnv();
+    it('should handle public messages, location messages, file messages, and disconnect', () => {
+      const { createSocket, emitted, users } = createMockSocketEnv();
       const socketA = createSocket('socket-a');
       socketA.trigger('join', { name: 'Ashik', room: 'DevRoom' }, () => {});
 
@@ -227,16 +243,29 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
         fileUrl: '123-doc.pdf',
         fileurl: '123-doc.pdf',
       });
+
+      socketA.trigger('disconnect');
+      expect(users.getUser('socket-a')).toBeUndefined();
+      expect(emitted.some((e) => e.event === 'newMessage' && e.data.text === 'Ashik has left.')).toBe(
+        true
+      );
     });
 
-    it('should handle private messaging, private files, and call signaling', () => {
+    it('should handle private messaging, private files, private locations, and call signaling', () => {
       const { createSocket, broadcasted } = createMockSocketEnv();
       const socketA = createSocket('socket-a');
       const socketB = createSocket('socket-b');
 
       socketA.trigger('join', { name: 'Ashik', room: 'DevRoom' }, () => {});
-      socketB.trigger('join', { name: 'jen', room: 'DevRoom' }, () => {});
+      socketB.trigger('join', { name: 'Jen', room: 'DevRoom' }, () => {});
       broadcasted.length = 0;
+
+      // Self-messaging should be ignored
+      socketA.trigger('createPrivateMessage', {
+        userid: 'socket-a',
+        message: 'Self hello',
+      });
+      expect(broadcasted.length).toBe(0);
 
       socketA.trigger('createPrivateMessage', {
         userid: 'socket-b',
@@ -259,11 +288,29 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
         event: 'privateMessageSuccessfulAdd',
       });
 
-      socketA.trigger('initializeAudioCall', 'socket-b');
+      socketA.trigger('createPrivateLocationMessage', {
+        userid: 'socket-b',
+        latitude: 23.81,
+        longitude: 90.41,
+      });
       expect(broadcasted[2]).toMatchObject({
         from: 'socket-a',
         target: 'socket-b',
+        event: 'newPrivateLocationMessage',
+      });
+
+      socketA.trigger('initializeAudioCall', 'socket-b');
+      expect(broadcasted[3]).toMatchObject({
+        from: 'socket-a',
+        target: 'socket-b',
         event: 'incomingCall',
+      });
+
+      socketA.trigger('initializeVideoCall', 'socket-b');
+      expect(broadcasted[4]).toMatchObject({
+        from: 'socket-a',
+        target: 'socket-b',
+        event: 'incomingVideoCall',
       });
     });
   });

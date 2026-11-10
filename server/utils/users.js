@@ -3,9 +3,31 @@ class Users {
     this.users = [];
   }
 
+  getCanonicalRoom(room) {
+    if (typeof room !== 'string') return room;
+    const trimmed = room.trim();
+    const existing = this.users.find(
+      (user) => user.room.toLowerCase() === trimmed.toLowerCase()
+    );
+    return existing ? existing.room : trimmed;
+  }
+
+  isNameTaken(name, room, excludeId = null) {
+    if (typeof name !== 'string' || typeof room !== 'string') return false;
+    const normalizedName = name.trim().toLowerCase();
+    const normalizedRoom = room.trim().toLowerCase();
+
+    return this.users.some(
+      (user) =>
+        user.id !== excludeId &&
+        user.room.toLowerCase() === normalizedRoom &&
+        user.name.toLowerCase() === normalizedName
+    );
+  }
+
   addUser(id, name, room) {
     const cleanName = typeof name === 'string' ? name.trim() : name;
-    const cleanRoom = typeof room === 'string' ? room.trim() : room;
+    const cleanRoom = this.getCanonicalRoom(room);
     this.removeUser(id);
     const user = { id, name: cleanName, room: cleanRoom };
     this.users.push(user);
@@ -27,11 +49,18 @@ class Users {
   }
 
   getUserList(room) {
-    return this.users.filter((user) => user.room === room);
+    if (typeof room !== 'string') return [];
+    const normalizedRoom = room.trim().toLowerCase();
+    return this.users.filter((user) => user.room.toLowerCase() === normalizedRoom);
   }
 
   getUserNamesList(room) {
     return this.getUserList(room).map((user) => user.name);
+  }
+
+  getActiveRooms() {
+    const rooms = new Set(this.users.map((user) => user.room));
+    return Array.from(rooms);
   }
 }
 

@@ -1,10 +1,14 @@
+const config = require('../config');
 const { generateLocationMessage } = require('../utils/message');
 const { isRealString } = require('../utils/validation');
 
 const registerPrivateHandlers = (io, socket, users) => {
   socket.on('privateMessageWindow', (target = {}) => {
     const sender = users.getUser(socket.id);
-    if (!sender || !target.id) return;
+    if (!sender || !target.id || target.id === socket.id) return;
+
+    const targetUser = users.getUser(target.id);
+    if (!targetUser) return;
 
     socket.broadcast.to(target.id).emit('notifyUser', {
       user: sender,
@@ -25,7 +29,17 @@ const registerPrivateHandlers = (io, socket, users) => {
 
   socket.on('createPrivateMessage', (payload = {}) => {
     const sender = users.getUser(socket.id);
-    if (!sender || !payload.userid || !isRealString(payload.message)) return;
+    if (
+      !sender ||
+      !payload.userid ||
+      payload.userid === socket.id ||
+      !isRealString(payload.message, config.limits.maxMessageLength)
+    ) {
+      return;
+    }
+
+    const recipient = users.getUser(payload.userid);
+    if (!recipient) return;
 
     socket.broadcast.to(payload.userid).emit('newPrivateMessage', {
       message: payload.message.trim(),
@@ -35,12 +49,12 @@ const registerPrivateHandlers = (io, socket, users) => {
   });
 
   socket.on('privateMessageSendSuccessful', (payload = {}) => {
-    if (!payload.userid) return;
+    if (!payload.userid || !isRealString(payload.message, config.limits.maxMessageLength)) return;
     const originalSender = users.getUser(payload.userid);
     if (!originalSender) return;
 
     const messageObject = {
-      message: payload.message,
+      message: payload.message.trim(),
       user: originalSender,
       id: socket.id,
       createdAt: Date.now(),
@@ -51,11 +65,20 @@ const registerPrivateHandlers = (io, socket, users) => {
 
   socket.on('newPrivateFileMessage', (info = {}) => {
     const sender = users.getUser(socket.id);
-    if (!sender || !info.userid || !info.fileInfo) return;
+    if (!sender || !info.userid || info.userid === socket.id || !info.fileInfo) return;
+
+    const recipient = users.getUser(info.userid);
+    if (!recipient) return;
+
+    const filename = info.fileInfo.filename || info.fileInfo.key;
+    if (!isRealString(filename, 500)) return;
 
     socket.broadcast.to(info.userid).emit('newPrivateFileMessage', {
       user: sender,
-      fileInfo: info.fileInfo,
+      fileInfo: {
+        ...info.fileInfo,
+        filename: filename.trim(),
+      },
       createdAt: Date.now(),
     });
   });
@@ -65,8 +88,11 @@ const registerPrivateHandlers = (io, socket, users) => {
     const originalSender = users.getUser(info.user.id);
     if (!originalSender) return;
 
+    const filename = info.fileInfo.filename || info.fileInfo.key;
+    if (!isRealString(filename, 500)) return;
+
     socket.broadcast.to(info.user.id).emit('privateFileSendSuccessful', {
-      filename: info.fileInfo.filename,
+      filename: filename.trim(),
       user: originalSender,
       id: socket.id,
       createdAt: Date.now(),
@@ -75,11 +101,23 @@ const registerPrivateHandlers = (io, socket, users) => {
 
   socket.on('createPrivateLocationMessage', (coords = {}) => {
     const sender = users.getUser(socket.id);
-    if (!sender || !coords.userid || coords.latitude === undefined || coords.longitude === undefined) {
+    const lat = Number(coords.latitude);
+    const lng = Number(coords.longitude);
+
+    if (
+      !sender ||
+      !coords.userid ||
+      coords.userid === socket.id ||
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lng)
+    ) {
       return;
     }
 
-    const location = generateLocationMessage(sender.name, coords.latitude, coords.longitude);
+    const recipient = users.getUser(coords.userid);
+    if (!recipient) return;
+
+    const location = generateLocationMessage(sender.name, lat, lng);
     socket.broadcast.to(coords.userid).emit('newPrivateLocationMessage', {
       location,
       user: sender,
@@ -87,7 +125,7 @@ const registerPrivateHandlers = (io, socket, users) => {
   });
 
   socket.on('locationMessageSuccessful', (message = {}) => {
-    if (!message.user || !message.user.id) return;
+    if (!message.user || !message.user.id || !message.location) return;
 
     const newMessage = {
       message,

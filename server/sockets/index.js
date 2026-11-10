@@ -4,12 +4,12 @@ const { registerChatHandlers } = require('./chat.handler');
 const { registerPrivateHandlers } = require('./private.handler');
 const { registerCallHandlers } = require('./call.handler');
 
-const initializeSocket = (httpServer, options = {}) => {
+const initializeSocket = (httpServer, options = {}, existingUsers = null) => {
   const io = new Server(httpServer, {
     maxHttpBufferSize: 1e7, // 10 MB buffer for audio/video stream chunks
     ...options,
   });
-  const users = new Users();
+  const users = existingUsers || new Users();
 
   io.on('connection', (socket) => {
     registerChatHandlers(io, socket, users);

@@ -38,6 +38,19 @@ describe('Users State Manager', () => {
     expect(customUsers.users).toEqual([user]);
   });
 
+  it('should normalize room name case-insensitively to match existing room', () => {
+    const added = users.addUser('4', 'Alex', 'node course');
+    expect(added.room).toBe('Node Course');
+    expect(users.getUserList('NODE COURSE').length).toBe(3);
+  });
+
+  it('should detect duplicate names case-insensitively within the same room', () => {
+    expect(users.isNameTaken('mike', 'Node Course')).toBe(true);
+    expect(users.isNameTaken('MIKE', 'node course')).toBe(true);
+    expect(users.isNameTaken('mike', 'React Course')).toBe(false);
+    expect(users.isNameTaken('mike', 'Node Course', '1')).toBe(false);
+  });
+
   it('should replace an existing user if added with the same socket id', () => {
     users.addUser('1', 'Mike Updated', 'Node Course');
     expect(users.users.length).toBe(3);
@@ -89,8 +102,8 @@ describe('Users State Manager', () => {
     expect(userList).toEqual([{ id: '2', name: 'Jen', room: 'React Course' }]);
   });
 
-  it('should return user names list for a room', () => {
-    const names = users.getUserNamesList('Node Course');
-    expect(names).toEqual(['Mike', 'Julie']);
+  it('should return user names list and active rooms list', () => {
+    expect(users.getUserNamesList('Node Course')).toEqual(['Mike', 'Julie']);
+    expect(users.getActiveRooms()).toEqual(['Node Course', 'React Course']);
   });
 });

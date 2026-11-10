@@ -7,6 +7,13 @@ const UPLOAD_DIR = path.join(ROOT_DIR, 'data');
 module.exports = {
   port: Number(process.env.PORT) || 3000,
   env: process.env.NODE_ENV || 'development',
+  storageType: process.env.STORAGE_TYPE || 'local', // 'local' or 's3'
+  limits: {
+    maxNameLength: 50,
+    maxRoomLength: 50,
+    maxMessageLength: 2000,
+    maxFileSize: 50 * 1024 * 1024, // 50 MB
+  },
   paths: {
     root: ROOT_DIR,
     public: PUBLIC_DIR,

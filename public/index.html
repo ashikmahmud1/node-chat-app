@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
   <meta charset="utf-8">
@@ -10,23 +10,59 @@
 
 <body class="centered-form">
   <div class="centered-form__form">
-    <form action="/chat.html">
+    <form action="/chat.html" id="join-form">
       <div class="form-field">
         <h3>Join a Chat</h3>
       </div>
       <div class="form-field">
-        <label>Display name</label>
-        <input type="text" name="name" autofocus/>
+        <label for="name-input">Display name</label>
+        <input id="name-input" type="text" name="name" maxlength="50" placeholder="Enter your name" autofocus required autocomplete="off" />
       </div>
       <div class="form-field">
-        <label>Room name</label>
-        <input type="text" name="room"/>
+        <label for="room-input">Room name</label>
+        <input id="room-input" type="text" name="room" list="active-rooms" maxlength="50" placeholder="Enter or select a room" required autocomplete="off" />
+        <datalist id="active-rooms"></datalist>
       </div>
       <div class="form-field">
-        <button>Join</button>
+        <button type="submit">Join</button>
       </div>
     </form>
   </div>
+
+  <script>
+    (function () {
+      var form = document.getElementById('join-form');
+      var nameInput = document.getElementById('name-input');
+      var roomInput = document.getElementById('room-input');
+      var datalist = document.getElementById('active-rooms');
+
+      if (window.fetch && datalist) {
+        fetch('/api/rooms')
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            if (data && Array.isArray(data.rooms)) {
+              data.rooms.forEach(function (room) {
+                var option = document.createElement('option');
+                option.value = room;
+                datalist.appendChild(option);
+              });
+            }
+          })
+          .catch(function () {});
+      }
+
+      if (form) {
+        form.addEventListener('submit', function (e) {
+          nameInput.value = nameInput.value.trim();
+          roomInput.value = roomInput.value.trim();
+          if (!nameInput.value || !roomInput.value) {
+            e.preventDefault();
+            alert('Please enter a valid display name and room name.');
+          }
+        });
+      }
+    })();
+  </script>
 </body>
 
 </html>

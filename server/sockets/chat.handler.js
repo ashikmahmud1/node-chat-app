@@ -1,29 +1,41 @@
+const config = require('../config');
 const { generateMessage, generateLocationMessage, generateFiles } = require('../utils/message');
 const { isRealString } = require('../utils/validation');
 
 const registerChatHandlers = (io, socket, users) => {
   socket.on('join', (params = {}, callback = () => {}) => {
-    if (!isRealString(params.name) || !isRealString(params.room)) {
-      return callback('Name and room name are required.');
+    const respond = typeof callback === 'function' ? callback : () => {};
+
+    if (
+      !isRealString(params.name, config.limits.maxNameLength) ||
+      !isRealString(params.room, config.limits.maxRoomLength)
+    ) {
+      return respond('Valid display name and room name (1-50 characters) are required.');
     }
 
     const name = params.name.trim();
-    const room = params.room.trim();
+    const canonicalRoom = users.getCanonicalRoom(params.room);
 
-    socket.join(room);
+    if (users.isNameTaken(name, canonicalRoom, socket.id)) {
+      return respond(`Display name "${name}" is already in use in room "${canonicalRoom}".`);
+    }
+
+    socket.join(canonicalRoom);
     users.removeUser(socket.id);
-    users.addUser(socket.id, name, room);
+    users.addUser(socket.id, name, canonicalRoom);
 
-    io.to(room).emit('updateUserList', users.getUserList(room));
+    io.to(canonicalRoom).emit('updateUserList', users.getUserList(canonicalRoom));
     socket.emit('newMessage', generateMessage('Admin', 'Welcome to the chat app'));
-    socket.broadcast.to(room).emit('newMessage', generateMessage('Admin', `${name} has joined.`));
-    return callback();
+    socket.broadcast
+      .to(canonicalRoom)
+      .emit('newMessage', generateMessage('Admin', `${name} has joined.`));
+    return respond();
   });
 
   socket.on('createMessage', (message = {}, callback = () => {}) => {
     const user = users.getUser(socket.id);
 
-    if (user && isRealString(message.text)) {
+    if (user && isRealString(message.text, config.limits.maxMessageLength)) {
       io.to(user.room).emit('newMessage', generateMessage(user.name, message.text.trim()));
     }
 
@@ -32,23 +44,33 @@ const registerChatHandlers = (io, socket, users) => {
     }
   });
 
-  socket.on('createLocationMessage', (coords = {}) => {
+  socket.on('createLocationMessage', (coords = {}, callback = () => {}) => {
     const user = users.getUser(socket.id);
+    const lat = Number(coords.latitude);
+    const lng = Number(coords.longitude);
 
-    if (user && coords.latitude !== undefined && coords.longitude !== undefined) {
+    if (user && Number.isFinite(lat) && Number.isFinite(lng)) {
       io.to(user.room).emit(
         'newLocationMessage',
-        generateLocationMessage(user.name, coords.latitude, coords.longitude)
+        generateLocationMessage(user.name, lat, lng)
       );
+    }
+
+    if (typeof callback === 'function') {
+      callback();
     }
   });
 
-  socket.on('newFileMessage', (fileInfo = {}) => {
+  socket.on('newFileMessage', (fileInfo = {}, callback = () => {}) => {
     const user = users.getUser(socket.id);
     const filename = fileInfo.filename || fileInfo.key;
 
-    if (user && isRealString(filename)) {
-      io.to(user.room).emit('newFileMessage', generateFiles(user.name, filename));
+    if (user && isRealString(filename, 500)) {
+      io.to(user.room).emit('newFileMessage', generateFiles(user.name, filename.trim()));
+    }
+
+    if (typeof callback === 'function') {
+      callback();
     }
   });
 

@@ -15,9 +15,14 @@ describe('Validation Utilities', () => {
       expect(isRealString('')).toBe(false);
     });
 
-    it('should allow strings with non-space characters', () => {
+    it('should allow strings with non-space characters within maxLength', () => {
       expect(isRealString('  Ashik  ')).toBe(true);
       expect(isRealString('D')).toBe(true);
+    });
+
+    it('should reject strings exceeding maxLength', () => {
+      expect(isRealString('abcdef', 5)).toBe(false);
+      expect(isRealString('abcde', 5)).toBe(true);
     });
   });
 });

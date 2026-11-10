@@ -7,7 +7,12 @@ const uploadFile = (req, res) => {
     return res.status(400).json({ error: 'No file provided for upload.' });
   }
 
-  return res.status(200).json({ file: req.file });
+  const normalizedFile = {
+    ...req.file,
+    filename: req.file.filename || req.file.key || req.file.originalname,
+  };
+
+  return res.status(200).json({ file: normalizedFile });
 };
 
 const downloadFile = (req, res, next) => {
