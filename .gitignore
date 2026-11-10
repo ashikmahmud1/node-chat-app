@@ -1,10 +1,17 @@
-node_modules/
-build
-npm-debug.log
-.nyc
-.env
-.DS_Store
+# Logs
+logs
+*.log
+npm-debug.log*
 
-#IDE
-.idea
-.vscode
+# Dependency directories
+node_modules/
+
+# Environment variables
+.env
+
+# Uploaded user files
+data/*
+!data/.gitkeep
+
+# OS metadata
+.DS_Store

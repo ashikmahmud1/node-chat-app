@@ -1,26 +1,35 @@
 const multer = require('multer');
 const multerS3 = require('multer-s3');
-const AWS = require('aws-sdk');
+const { S3Client } = require('@aws-sdk/client-s3');
+const config = require('../config');
 
-// Configure AWS SDK
-const s3 = new AWS.S3({
-    accessKeyId: 'YOUR_ACCESS_KEY_ID',
-    secretAccessKey: 'YOUR_SECRET_ACCESS_KEY',
-    region: 'YOUR_AWS_REGION', // e.g., 'us-west-1'
-});
+const s3Config = {
+  region: config.aws.region,
+};
 
-// Configure multer and multer-s3
-const uploadS3 = multer({
+if (config.aws.accessKeyId && config.aws.secretAccessKey) {
+  s3Config.credentials = {
+    accessKeyId: config.aws.accessKeyId,
+    secretAccessKey: config.aws.secretAccessKey,
+  };
+}
+
+const s3 = new S3Client(s3Config);
+
+const createS3Upload = (bucketName = config.aws.bucketName) =>
+  multer({
     storage: multerS3({
-        s3: s3,
-        bucket: 'YOUR_S3_BUCKET_NAME',
-        metadata: function (req, file, cb) {
-            cb(null, { fieldName: file.fieldname });
-        },
-        key: function (req, file, cb) {
-            cb(null, Date.now().toString() + '-' + file.originalname);
-        },
+      s3,
+      bucket: bucketName || 'default-bucket',
+      metadata: (req, file, cb) => {
+        cb(null, { fieldName: file.fieldname });
+      },
+      key: (req, file, cb) => {
+        cb(null, `${Date.now()}-${file.originalname}`);
+      },
     }),
-});
+  });
 
-exports.uploadS3 = uploadS3;
+const uploadS3 = createS3Upload();
+
+module.exports = { s3, uploadS3, createS3Upload };
