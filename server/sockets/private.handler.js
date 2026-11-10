@@ -2,7 +2,12 @@ const config = require('../config');
 const { generateLocationMessage } = require('../utils/message');
 const { isRealString } = require('../utils/validation');
 
-const registerPrivateHandlers = (io, socket, users) => {
+const registerPrivateHandlers = (io, socket, users, rateLimiter = null) => {
+  const checkAllowed = () => {
+    if (!rateLimiter) return true;
+    return rateLimiter.consume(socket.id).allowed;
+  };
+
   socket.on('privateMessageWindow', (target = {}) => {
     const sender = users.getUser(socket.id);
     if (!sender || !target.id || target.id === socket.id) return;
@@ -27,7 +32,19 @@ const registerPrivateHandlers = (io, socket, users) => {
     });
   });
 
+  socket.on('private:typing', (payload = {}) => {
+    const sender = users.getUser(socket.id);
+    if (!sender || !payload.userid || payload.userid === socket.id) return;
+
+    socket.broadcast.to(payload.userid).emit('private:typing', {
+      userId: socket.id,
+      name: sender.name,
+      isTyping: Boolean(payload.isTyping),
+    });
+  });
+
   socket.on('createPrivateMessage', (payload = {}) => {
+    if (!checkAllowed()) return;
     const sender = users.getUser(socket.id);
     if (
       !sender ||
@@ -40,6 +57,12 @@ const registerPrivateHandlers = (io, socket, users) => {
 
     const recipient = users.getUser(payload.userid);
     if (!recipient) return;
+
+    socket.broadcast.to(payload.userid).emit('private:typing', {
+      userId: socket.id,
+      name: sender.name,
+      isTyping: false,
+    });
 
     socket.broadcast.to(payload.userid).emit('newPrivateMessage', {
       message: payload.message.trim(),
@@ -64,6 +87,7 @@ const registerPrivateHandlers = (io, socket, users) => {
   });
 
   socket.on('newPrivateFileMessage', (info = {}) => {
+    if (!checkAllowed()) return;
     const sender = users.getUser(socket.id);
     if (!sender || !info.userid || info.userid === socket.id || !info.fileInfo) return;
 
@@ -100,6 +124,7 @@ const registerPrivateHandlers = (io, socket, users) => {
   });
 
   socket.on('createPrivateLocationMessage', (coords = {}) => {
+    if (!checkAllowed()) return;
     const sender = users.getUser(socket.id);
     const lat = Number(coords.latitude);
     const lng = Number(coords.longitude);

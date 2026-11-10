@@ -2,6 +2,7 @@ const multer = require('multer');
 const multerS3 = require('multer-s3');
 const { S3Client } = require('@aws-sdk/client-s3');
 const config = require('../config');
+const { fileFilter } = require('./file-upload');
 
 const s3Config = {
   region: config.aws.region,
@@ -18,6 +19,10 @@ const s3 = new S3Client(s3Config);
 
 const createS3Upload = (bucketName = config.aws.bucketName) =>
   multer({
+    fileFilter,
+    limits: {
+      fileSize: config.limits.maxFileSize,
+    },
     storage: multerS3({
       s3,
       bucket: bucketName || 'default-bucket',

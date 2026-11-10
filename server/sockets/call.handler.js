@@ -2,12 +2,22 @@ const registerCallHandlers = (io, socket, users) => {
   socket.on('initializeAudioCall', (userid) => {
     const caller = users.getUser(socket.id);
     if (!caller || !userid) return;
+    const recipient = users.getUser(userid);
+    if (recipient && recipient.status === 'dnd') {
+      socket.emit('userBusy');
+      return;
+    }
     socket.broadcast.to(userid).emit('incomingCall', caller);
   });
 
   socket.on('initializeVideoCall', (userid) => {
     const caller = users.getUser(socket.id);
     if (!caller || !userid) return;
+    const recipient = users.getUser(userid);
+    if (recipient && recipient.status === 'dnd') {
+      socket.emit('userVideoBusy');
+      return;
+    }
     socket.broadcast.to(userid).emit('incomingVideoCall', caller);
   });
 

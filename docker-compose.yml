@@ -1,0 +1,19 @@
+services:
+  chat-app:
+    build: .
+    container_name: nexus-chat-sfu
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - LOG_LEVEL=info
+      - STORAGE_TYPE=local
+    volumes:
+      - ./data:/usr/src/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

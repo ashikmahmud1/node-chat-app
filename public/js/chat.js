@@ -26,9 +26,43 @@ var audio_message = null;
 var activeMediaStream = null;
 var activeMediaRecorder = null;
 
+// WebRTC SFU State (1-to-1 & Multi-user Room Calls)
+var rtcIceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+var currentRoomName = 'General';
+var currentUserName = 'Me';
+var privateSfuSessionId = '';
+var privateSfuPc = null;
+var roomSfuSessionId = '';
+var roomSfuPc = null;
+var roomLocalStream = null;
+var roomScreenStream = null;
+var roomCallActive = false;
+var roomCallTimerTimeout = null;
+var roomTrackOwners = {};
+
+// Message Deduplication, Reactions & Typing State
+var rendered_message_ids = {};
+var room_typing_users = {};
+var roomTypingStopTimeout = null;
+var privateTypingStopTimeout = null;
+var QUICK_REACTIONS = ['👍', '❤️', '🎉', '🚀'];
+
+if (window.fetch) {
+  fetch('/api/rtc-config')
+    .then(function (res) {
+      return res.json();
+    })
+    .then(function (data) {
+      if (data && Array.isArray(data.iceServers) && data.iceServers.length > 0) {
+        rtcIceServers = data.iceServers;
+      }
+    })
+    .catch(function () {});
+}
+
 // Dictionary storing private message history per user ID
 var user_message_dictionary = {};
-// Persistent unread badge counter per user ID (survives updateUserList re-renders)
+// Persistent unread badge counter per user ID
 var unread_counts = {};
 // Map of active users in the room by socket ID
 var room_users_map = {};
@@ -50,6 +84,11 @@ function playNotificationSound() {
   if (playPromise && typeof playPromise.catch === 'function') {
     playPromise.catch(function () {});
   }
+}
+
+function getPrivateSessionId(peerIdA, peerIdB) {
+  var pair = [peerIdA, peerIdB].sort();
+  return 'private:' + pair[0] + ':' + pair[1];
 }
 
 function updateUnreadBadgeDOM(userId) {
@@ -92,11 +131,8 @@ function clearVideoRingTimeout() {
   }
 }
 
-function update() {
-  if (!calling) return;
-  var $worked = $('#show-time');
-  var myTime = $worked.html() || '00:00';
-  var ss = myTime.split(':');
+function formatNextSecond(currentText) {
+  var ss = (currentText || '00:00').split(':');
   var dt = new Date();
   dt.setHours(0);
   dt.setMinutes(parseInt(ss[0], 10) || 0);
@@ -105,8 +141,13 @@ function update() {
   var dt2 = new Date(dt.valueOf() + 1000);
   var temp = dt2.toTimeString().split(' ');
   var ts = temp[0].split(':');
+  return ts[1] + ':' + ts[2];
+}
 
-  $worked.html(ts[1] + ':' + ts[2]);
+function update() {
+  if (!calling) return;
+  var $worked = $('#show-time');
+  $worked.html(formatNextSecond($worked.html()));
   callTimerTimeout = setTimeout(update, 1000);
 }
 
@@ -117,7 +158,36 @@ function stopCallTimer() {
   }
 }
 
+function updateRoomTimer() {
+  if (!roomCallActive) return;
+  var $timer = $('#room-call-timer');
+  $timer.html(formatNextSecond($timer.html()));
+  roomCallTimerTimeout = setTimeout(updateRoomTimer, 1000);
+}
+
+function stopRoomCallTimer() {
+  if (roomCallTimerTimeout) {
+    clearTimeout(roomCallTimerTimeout);
+    roomCallTimerTimeout = null;
+  }
+}
+
+function closePrivateSfuConnection() {
+  if (privateSfuSessionId) {
+    socket.emit('sfu:leave', { sessionId: privateSfuSessionId });
+    privateSfuSessionId = '';
+  }
+  if (privateSfuPc) {
+    try {
+      privateSfuPc.close();
+    } catch (e) {}
+    privateSfuPc = null;
+  }
+}
+
 function stopMediaStream() {
+  closePrivateSfuConnection();
+
   if (audio_message) {
     clearInterval(audio_message);
     audio_message = null;
@@ -142,7 +212,477 @@ function stopMediaStream() {
     selfVideo.srcObject = null;
     $('#self-video').addClass('self-video');
   }
+  var otherVideo = document.getElementById('other-video');
+  if (otherVideo) {
+    otherVideo.srcObject = null;
+  }
 }
+
+/* ==========================================================================
+   WebRTC SFU Client Engine (1-to-1 Private Calls & Multi-User Room Calls)
+   ========================================================================== */
+
+function startPrivateSfuSession(targetUserId, mode, mediaStream) {
+  if (!window.RTCPeerConnection || !targetUserId) return false;
+
+  closePrivateSfuConnection();
+  privateSfuSessionId = getPrivateSessionId(socket.id, targetUserId);
+  var pc = new RTCPeerConnection({
+    iceServers: rtcIceServers,
+  });
+  privateSfuPc = pc;
+
+  mediaStream.getTracks().forEach(function (track) {
+    pc.addTrack(track, mediaStream);
+  });
+
+  pc.onicecandidate = function (event) {
+    if (event.candidate && privateSfuSessionId) {
+      socket.emit('sfu:candidate', {
+        sessionId: privateSfuSessionId,
+        candidate: event.candidate,
+      });
+    }
+  };
+
+  pc.ontrack = function (event) {
+    var remoteStream = (event.streams && event.streams[0]) || new MediaStream([event.track]);
+    if (event.track.kind === 'video' || mode === 'video') {
+      var otherVideo = document.getElementById('other-video');
+      if (otherVideo) {
+        otherVideo.srcObject = remoteStream;
+        $('#other-video').removeClass('other-video');
+      }
+    } else if (calling_audio) {
+      calling_audio.srcObject = remoteStream;
+    }
+  };
+
+  pc.createOffer()
+    .then(function (offer) {
+      return pc.setLocalDescription(offer);
+    })
+    .then(function () {
+      socket.emit(
+        'sfu:join',
+        {
+          sessionId: privateSfuSessionId,
+          mode: mode,
+          sdp: pc.localDescription,
+        },
+        function (res) {
+          if (res && res.ok && res.sdp && privateSfuPc === pc) {
+            pc.setRemoteDescription(new RTCSessionDescription(res.sdp)).catch(function () {});
+          }
+        }
+      );
+    })
+    .catch(function (err) {
+      console.error('Private SFU negotiation error:', err);
+    });
+
+  return true;
+}
+
+function renderRoomVideoTile(streamId, labelText, stream, isSelf) {
+  var grid = document.getElementById('room-video-grid');
+  if (!grid) return;
+
+  var tileId = 'sfu-tile-' + streamId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  var existingTile = document.getElementById(tileId);
+  var videoEl;
+
+  if (!existingTile) {
+    existingTile = document.createElement('div');
+    existingTile.className = 'sfu-video-tile';
+    existingTile.id = tileId;
+
+    videoEl = document.createElement('video');
+    videoEl.autoplay = true;
+    videoEl.playsInline = true;
+    if (isSelf) {
+      videoEl.muted = true;
+    }
+
+    var badge = document.createElement('div');
+    badge.className = 'sfu-video-tile__label';
+    badge.innerHTML = '<i class="fa fa-user" aria-hidden="true"></i> <span></span>';
+    badge.querySelector('span').textContent = labelText;
+
+    existingTile.appendChild(videoEl);
+    existingTile.appendChild(badge);
+    grid.appendChild(existingTile);
+  } else {
+    videoEl = existingTile.querySelector('video');
+    var nameSpan = existingTile.querySelector('.sfu-video-tile__label span');
+    if (nameSpan && labelText) {
+      nameSpan.textContent = labelText;
+    }
+  }
+
+  if (videoEl && stream && videoEl.srcObject !== stream) {
+    videoEl.srcObject = stream;
+  }
+}
+
+function removeRoomVideoTile(streamId) {
+  if (!streamId) return;
+  var tileId = 'sfu-tile-' + streamId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  var tile = document.getElementById(tileId);
+  if (tile && tile.parentNode) {
+    var vid = tile.querySelector('video');
+    if (vid) vid.srcObject = null;
+    tile.parentNode.removeChild(tile);
+  }
+}
+
+function joinRoomSfuCall(mode) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return alert('WebRTC media devices are not supported in this browser.');
+  }
+
+  if (roomCallActive) {
+    leaveRoomSfuCall();
+  }
+
+  var constraints = {
+    audio: true,
+    video: mode === 'video',
+  };
+
+  navigator.mediaDevices
+    .getUserMedia(constraints)
+    .then(function (mediaStream) {
+      roomLocalStream = mediaStream;
+      roomCallActive = true;
+      roomSfuSessionId = 'room:' + currentRoomName;
+
+      $('#room-call-stage').removeClass('hide-element');
+      $('#room-call-mode-label').text(
+        currentRoomName + ' — SFU ' + (mode === 'video' ? 'Video' : 'Audio') + ' Conference'
+      );
+      $('#room-call-timer').html('00:00');
+      stopRoomCallTimer();
+      roomCallTimerTimeout = setTimeout(updateRoomTimer, 1000);
+
+      var grid = document.getElementById('room-video-grid');
+      if (grid) grid.innerHTML = '';
+
+      renderRoomVideoTile('local-self', currentUserName + ' (You)', mediaStream, true);
+
+      var pc = new RTCPeerConnection({
+        iceServers: rtcIceServers,
+      });
+      roomSfuPc = pc;
+
+      mediaStream.getTracks().forEach(function (track) {
+        pc.addTrack(track, mediaStream);
+      });
+
+      pc.onicecandidate = function (event) {
+        if (event.candidate && roomSfuSessionId) {
+          socket.emit('sfu:candidate', {
+            sessionId: roomSfuSessionId,
+            candidate: event.candidate,
+          });
+        }
+      };
+
+      pc.ontrack = function (event) {
+        var remoteStream = (event.streams && event.streams[0]) || new MediaStream([event.track]);
+        var streamId = remoteStream.id || event.track.id;
+        var ownerInfo = roomTrackOwners[streamId];
+        var label = ownerInfo ? ownerInfo.name : 'Participant';
+        renderRoomVideoTile(streamId, label, remoteStream, false);
+      };
+
+      return pc
+        .createOffer()
+        .then(function (offer) {
+          return pc.setLocalDescription(offer);
+        })
+        .then(function () {
+          socket.emit(
+            'sfu:join',
+            {
+              sessionId: roomSfuSessionId,
+              mode: mode,
+              sdp: pc.localDescription,
+            },
+            function (res) {
+              if (res && res.ok && res.sdp && roomSfuPc === pc) {
+                pc.setRemoteDescription(new RTCSessionDescription(res.sdp)).catch(function () {});
+              }
+            }
+          );
+        });
+    })
+    .catch(function (err) {
+      console.error('Failed to join Room SFU call:', err);
+      alert('Unable to access microphone/camera for the room call.');
+      leaveRoomSfuCall();
+    });
+}
+
+function stopScreenShareTrack() {
+  if (roomScreenStream) {
+    roomScreenStream.getTracks().forEach(function (track) {
+      track.stop();
+    });
+    roomScreenStream = null;
+  }
+  $('#room-toggle-screen').removeClass('muted-state');
+}
+
+function toggleRoomScreenShare() {
+  if (!roomCallActive || !roomSfuPc) return;
+
+  if (roomScreenStream) {
+    stopScreenShareTrack();
+    if (roomLocalStream) {
+      var camTrack = roomLocalStream.getVideoTracks()[0];
+      var sender = roomSfuPc.getSenders().find(function (s) {
+        return s.track && s.track.kind === 'video';
+      });
+      if (sender && camTrack) {
+        sender.replaceTrack(camTrack);
+      }
+      renderRoomVideoTile('local-self', currentUserName + ' (You)', roomLocalStream, true);
+    }
+    socket.emit('sfu:media-state', {
+      sessionId: roomSfuSessionId,
+      screenSharing: false,
+    });
+    return;
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    return alert('Screen sharing is not supported in this browser.');
+  }
+
+  navigator.mediaDevices
+    .getDisplayMedia({ video: true })
+    .then(function (displayStream) {
+      roomScreenStream = displayStream;
+      var screenTrack = displayStream.getVideoTracks()[0];
+      if (!screenTrack) return;
+
+      var videoSender = roomSfuPc.getSenders().find(function (s) {
+        return s.track && s.track.kind === 'video';
+      });
+      if (videoSender) {
+        videoSender.replaceTrack(screenTrack);
+      } else {
+        roomSfuPc.addTrack(screenTrack, displayStream);
+      }
+
+      renderRoomVideoTile('local-self', currentUserName + ' (Screen)', displayStream, true);
+      $('#room-toggle-screen').addClass('muted-state');
+
+      socket.emit('sfu:media-state', {
+        sessionId: roomSfuSessionId,
+        screenSharing: true,
+      });
+
+      screenTrack.onended = function () {
+        if (roomScreenStream) {
+          toggleRoomScreenShare();
+        }
+      };
+    })
+    .catch(function () {});
+}
+
+function leaveRoomSfuCall() {
+  roomCallActive = false;
+  stopRoomCallTimer();
+  stopScreenShareTrack();
+
+  if (roomSfuSessionId) {
+    socket.emit('sfu:leave', { sessionId: roomSfuSessionId });
+    roomSfuSessionId = '';
+  }
+
+  if (roomSfuPc) {
+    try {
+      roomSfuPc.close();
+    } catch (e) {}
+    roomSfuPc = null;
+  }
+
+  if (roomLocalStream) {
+    roomLocalStream.getTracks().forEach(function (track) {
+      track.stop();
+    });
+    roomLocalStream = null;
+  }
+
+  var grid = document.getElementById('room-video-grid');
+  if (grid) grid.innerHTML = '';
+  $('#room-call-stage').addClass('hide-element');
+  $('#room-toggle-mic').removeClass('muted-state');
+  $('#room-toggle-cam').removeClass('muted-state');
+}
+
+// SFU Signaling Listeners
+socket.on('sfu:offer', function (data) {
+  if (!data || !data.sessionId || !data.sdp) return;
+
+  if (data.trackOwnerMap) {
+    Object.keys(data.trackOwnerMap).forEach(function (streamId) {
+      roomTrackOwners[streamId] = data.trackOwnerMap[streamId];
+    });
+  }
+
+  var targetPc = null;
+  if (data.sessionId === roomSfuSessionId) {
+    targetPc = roomSfuPc;
+  } else if (data.sessionId === privateSfuSessionId) {
+    targetPc = privateSfuPc;
+  }
+  if (!targetPc) return;
+
+  targetPc
+    .setRemoteDescription(new RTCSessionDescription(data.sdp))
+    .then(function () {
+      return targetPc.createAnswer();
+    })
+    .then(function (answer) {
+      return targetPc.setLocalDescription(answer);
+    })
+    .then(function () {
+      socket.emit('sfu:answer', {
+        sessionId: data.sessionId,
+        sdp: targetPc.localDescription,
+      });
+    })
+    .catch(function (err) {
+      console.error('SFU renegotiation error:', err);
+    });
+});
+
+socket.on('sfu:candidate', function (data) {
+  if (!data || !data.sessionId || !data.candidate) return;
+  var targetPc = null;
+  if (data.sessionId === roomSfuSessionId) {
+    targetPc = roomSfuPc;
+  } else if (data.sessionId === privateSfuSessionId) {
+    targetPc = privateSfuPc;
+  }
+  if (!targetPc) return;
+
+  targetPc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(function () {});
+});
+
+socket.on('sfu:participant-left', function (data) {
+  if (!data) return;
+  if (data.sessionId === roomSfuSessionId && data.streamId) {
+    removeRoomVideoTile(data.streamId);
+  }
+});
+
+socket.on('sfu:room-call-status', function (data) {
+  if (!data || !Array.isArray(data.participants)) return;
+  var count = data.participants.length;
+  if (count > 0) {
+    $('#room-call-count').text(String(count));
+    $('#room-call-active-badge').removeClass('hide-element');
+  } else {
+    $('#room-call-active-badge').addClass('hide-element');
+  }
+});
+
+// Room SFU Call Controls
+$('#join-room-audio-btn').on('click', function () {
+  joinRoomSfuCall('audio');
+});
+
+$('#join-room-video-btn').on('click', function () {
+  joinRoomSfuCall('video');
+});
+
+$('#room-leave-call').on('click', function () {
+  leaveRoomSfuCall();
+});
+
+$('#room-toggle-screen').on('click', function () {
+  toggleRoomScreenShare();
+});
+
+$('#room-toggle-mic').on('click', function () {
+  if (!roomLocalStream) return;
+  var audioTracks = roomLocalStream.getAudioTracks();
+  if (!audioTracks.length) return;
+  var enabled = !audioTracks[0].enabled;
+  audioTracks.forEach(function (t) {
+    t.enabled = enabled;
+  });
+  $('#room-toggle-mic').toggleClass('muted-state', !enabled);
+  if (roomSfuSessionId) {
+    socket.emit('sfu:media-state', {
+      sessionId: roomSfuSessionId,
+      audioEnabled: enabled,
+    });
+  }
+});
+
+$('#room-toggle-cam').on('click', function () {
+  if (!roomLocalStream) return;
+  var videoTracks = roomLocalStream.getVideoTracks();
+  if (!videoTracks.length) return;
+  var enabled = !videoTracks[0].enabled;
+  videoTracks.forEach(function (t) {
+    t.enabled = enabled;
+  });
+  $('#room-toggle-cam').toggleClass('muted-state', !enabled);
+  if (roomSfuSessionId) {
+    socket.emit('sfu:media-state', {
+      sessionId: roomSfuSessionId,
+      videoEnabled: enabled,
+    });
+  }
+});
+
+// Presence Status Selector
+$('#presence-status-select').on('change', function () {
+  var status = $(this).val();
+  socket.emit('presence:update', { status: status });
+});
+
+// Live Room Message Search Filter
+$('#room-message-search').on('input', function () {
+  var query = ($(this).val() || '').trim().toLowerCase();
+  $('#messages li.message').each(function () {
+    var $li = $(this);
+    var textContent = ($li.text() || '').toLowerCase();
+    if (!query || textContent.indexOf(query) !== -1) {
+      $li.show();
+    } else {
+      $li.hide();
+    }
+  });
+});
+
+// Private Call Mic/Cam Toggle Controls
+$('#private-toggle-mic-audio, #private-toggle-mic-video').on('click', function () {
+  if (!activeMediaStream) return;
+  var audioTracks = activeMediaStream.getAudioTracks();
+  if (!audioTracks.length) return;
+  var enabled = !audioTracks[0].enabled;
+  audioTracks.forEach(function (t) {
+    t.enabled = enabled;
+  });
+});
+
+$('#private-toggle-cam-video').on('click', function () {
+  if (!activeMediaStream) return;
+  var videoTracks = activeMediaStream.getVideoTracks();
+  if (!videoTracks.length) return;
+  var enabled = !videoTracks[0].enabled;
+  videoTracks.forEach(function (t) {
+    t.enabled = enabled;
+  });
+});
 
 function privateScrollToBottom() {
   var modal = document.getElementsByClassName('modal-body')[0];
@@ -169,6 +709,7 @@ function openPrivateModalForUser(userId, userName) {
   if (!userId) return;
   private_btn_id[0].setAttribute('id', userId + '0');
   document.getElementsByClassName('modal-title')[0].innerHTML = userName || 'Private Chat';
+  $('#private-typing-indicator').addClass('hide-element').text('');
   clearUnreadBadge(userId);
   renderPrivateMessages(userId);
   $('#myModal').modal('show');
@@ -215,7 +756,6 @@ function renderPrivateMessages(userId) {
   }
 }
 
-// Allow clicking the incoming call alert banner to switch directly to the caller's modal
 $('#alert-box').on('click', function () {
   var pendingCallerId = caller_id || video_caller_id;
   if (!pendingCallerId || !room_users_map[pendingCallerId]) return;
@@ -230,11 +770,193 @@ $('#alert-box').on('click', function () {
     $('#video-call').attr('disabled', true);
     modal_close_button[0].setAttribute('disabled', 'disabled');
   } else if (video_caller_id === pendingCallerId) {
-    document.getElementById('video-calling-text').innerHTML = callerUser.name + ' Video Calling......';
+    document.getElementById('video-calling-text').innerHTML =
+      callerUser.name + ' Video Calling......';
     $('#video-call-receive-section').removeClass('accept-reject-video-call');
     $('#audio-call').attr('disabled', true);
     $('#video-call').attr('disabled', true);
     modal_close_button[0].setAttribute('disabled', 'disabled');
+  }
+});
+
+// Build reaction & edit/delete toolbar for public room messages
+function renderMessageReactions($li, messageId, reactions) {
+  var $bar = $li.find('.reaction-bar');
+  if (!$bar.length) return;
+  $bar.empty();
+
+  var reactionMap = reactions || {};
+  QUICK_REACTIONS.forEach(function (emoji) {
+    var usersList = Array.isArray(reactionMap[emoji]) ? reactionMap[emoji] : [];
+    var count = usersList.length;
+    var isMine = usersList.indexOf(currentUserName) !== -1;
+
+    var $btn = $('<button type="button" class="reaction-btn"></button>');
+    if (isMine) $btn.addClass('active-reaction');
+    $btn.text(count > 0 ? emoji + ' ' + count : emoji);
+    if (count > 0) {
+      $btn.attr('title', usersList.join(', '));
+    }
+    $btn.on('click', function () {
+      socket.emit('message:reaction', {
+        messageId: messageId,
+        emoji: emoji,
+      });
+    });
+    $bar.append($btn);
+  });
+}
+
+function appendRoomMessageItem(message) {
+  if (!message) return;
+  if (message.id && rendered_message_ids[message.id]) return;
+  if (message.id) {
+    rendered_message_ids[message.id] = true;
+  }
+
+  var formattedTime = moment(message.createdAt).format('h:mm a');
+  var template;
+  var html;
+  var isTextMessage = false;
+
+  if (message.type === 'location' || (message.url && message.url.indexOf('google.com/maps') !== -1)) {
+    template = jQuery('#location-message-template').html();
+    html = Mustache.render(template, {
+      from: message.from,
+      url: message.url,
+      createdAt: formattedTime,
+    });
+  } else if (message.type === 'file' || message.fileUrl || message.fileurl) {
+    var fileUrl = message.fileUrl || message.fileurl || message.url;
+    template = jQuery('#file-message-template').html();
+    html = Mustache.render(template, {
+      from: message.from,
+      url: fileUrl,
+      createdAt: formattedTime,
+    });
+  } else {
+    isTextMessage = true;
+    template = jQuery('#message-template').html();
+    html = Mustache.render(template, {
+      text: message.text,
+      from: message.from,
+      createdAt: formattedTime,
+    });
+  }
+
+  var $li = jQuery(html);
+  if (message.id) {
+    $li.attr('data-message-id', message.id);
+  }
+  if (message.edited) {
+    $li.find('.user-time').after('<span class="edited-tag">(edited)</span>');
+  }
+
+  if (message.id && message.from !== 'Admin') {
+    var $toolbar = $('<div class="message-toolbar"></div>');
+    var $reactionBar = $('<div class="reaction-bar"></div>');
+    $toolbar.append($reactionBar);
+
+    if (message.from === currentUserName) {
+      var $ownerActions = $('<div class="msg-owner-actions"></div>');
+      if (isTextMessage) {
+        var $editBtn = $(
+          '<button type="button" class="msg-action-btn" title="Edit message"><i class="fa fa-pencil"></i></button>'
+        );
+        $editBtn.on('click', function () {
+          var currentText = $li.find('.message__body p').text();
+          var updatedText = window.prompt('Edit your message:', currentText);
+          if (updatedText && updatedText.trim() && updatedText.trim() !== currentText) {
+            socket.emit('message:edit', {
+              messageId: message.id,
+              text: updatedText.trim(),
+            });
+          }
+        });
+        $ownerActions.append($editBtn);
+      }
+
+      var $delBtn = $(
+        '<button type="button" class="msg-action-btn msg-action-delete" title="Delete message"><i class="fa fa-trash-o"></i></button>'
+      );
+      $delBtn.on('click', function () {
+        socket.emit('message:delete', { messageId: message.id });
+      });
+      $ownerActions.append($delBtn);
+      $toolbar.append($ownerActions);
+    }
+
+    $li.append($toolbar);
+    renderMessageReactions($li, message.id, message.reactions);
+  }
+
+  jQuery('#messages').append($li);
+  scrollToBottom('#messages');
+}
+
+socket.on('roomHistory', function (messages) {
+  if (!Array.isArray(messages)) return;
+  messages.forEach(function (msg) {
+    appendRoomMessageItem(msg);
+  });
+});
+
+socket.on('message:edited', function (data) {
+  if (!data || !data.messageId) return;
+  var $li = $('#messages li.message[data-message-id="' + data.messageId + '"]');
+  if (!$li.length) return;
+  $li.find('.message__body p').text(data.text);
+  if (!$li.find('.edited-tag').length) {
+    $li.find('.user-time').after('<span class="edited-tag">(edited)</span>');
+  }
+});
+
+socket.on('message:deleted', function (data) {
+  if (!data || !data.messageId) return;
+  delete rendered_message_ids[data.messageId];
+  $('#messages li.message[data-message-id="' + data.messageId + '"]').remove();
+});
+
+socket.on('message:reaction-updated', function (data) {
+  if (!data || !data.messageId) return;
+  var $li = $('#messages li.message[data-message-id="' + data.messageId + '"]');
+  if (!$li.length) return;
+  renderMessageReactions($li, data.messageId, data.reactions);
+});
+
+// Typing indicators (Room & Private)
+function updateRoomTypingBanner() {
+  var names = Object.keys(room_typing_users).map(function (uid) {
+    return room_typing_users[uid];
+  });
+  var $banner = $('#room-typing-indicator');
+  if (names.length === 0) {
+    $banner.addClass('hide-element').text('');
+  } else if (names.length === 1) {
+    $banner.removeClass('hide-element').text(names[0] + ' is typing...');
+  } else {
+    $banner.removeClass('hide-element').text(names.join(', ') + ' are typing...');
+  }
+}
+
+socket.on('typing:update', function (data) {
+  if (!data || !data.userId) return;
+  if (data.isTyping && data.name) {
+    room_typing_users[data.userId] = data.name;
+  } else {
+    delete room_typing_users[data.userId];
+  }
+  updateRoomTypingBanner();
+});
+
+socket.on('private:typing', function (data) {
+  if (!data || !data.userId) return;
+  if (getActivePrivateUserId() !== data.userId) return;
+  var $indicator = $('#private-typing-indicator');
+  if (data.isTyping && data.name) {
+    $indicator.removeClass('hide-element').text(data.name + ' is typing...');
+  } else {
+    $indicator.addClass('hide-element').text('');
   }
 });
 
@@ -301,17 +1023,7 @@ window.addEventListener('load', function () {
 });
 
 socket.on('newFileMessage', function (message) {
-  var formattedTime = moment(message.createdAt).format('h:mm a');
-  var fileUrl = message.fileUrl || message.fileurl || message.url;
-  var template = jQuery('#file-message-template').html();
-  var html = Mustache.render(template, {
-    from: message.from,
-    url: fileUrl,
-    createdAt: formattedTime,
-  });
-
-  jQuery('#messages').append(html);
-  scrollToBottom('#messages');
+  appendRoomMessageItem(message);
 });
 
 function uploadFile(fileEl) {
@@ -368,12 +1080,14 @@ function uploadFile(fileEl) {
         modal_close_button[0].removeAttribute('disabled');
       }
     },
-    error: function (err) {
-      console.error('Error uploading file:', err);
+    error: function (xhr) {
+      var errMsg =
+        (xhr && xhr.responseJSON && xhr.responseJSON.error) ||
+        'Failed to upload file. Please try again.';
       if (modal_close_button[0]) {
         modal_close_button[0].removeAttribute('disabled');
       }
-      alert('Failed to upload file. Please try again.');
+      alert(errMsg);
     },
     complete: function () {
       progress_bar.classList.add('progress-hide');
@@ -405,11 +1119,23 @@ function upload_private_file() {
 
 socket.on('connect', function () {
   var params = jQuery.deparam(window.location.search);
+  currentRoomName = (params && params.room) || 'General';
+  currentUserName = (params && params.name) || 'Me';
+
+  $('#header-room-title').text('# ' + currentRoomName);
+  $('#sidebar-room-name').text('# ' + currentRoomName);
 
   socket.emit('join', params, function (err) {
     if (err) {
       alert(err);
       window.location.href = '/';
+    } else {
+      socket.emit('sfu:get-room-status', { room: currentRoomName }, function (res) {
+        if (res && Array.isArray(res.participants) && res.participants.length > 0) {
+          $('#room-call-count').text(String(res.participants.length));
+          $('#room-call-active-badge').removeClass('hide-element');
+        }
+      });
     }
   });
 });
@@ -421,7 +1147,6 @@ function private_chat(event) {
   var targetUser = room_users_map[id];
   var targetName = targetUser ? targetUser.name : 'Private Chat';
 
-  // Immediately open modal for the selected user
   openPrivateModalForUser(id, targetName);
 
   if (caller_id === id) {
@@ -450,12 +1175,27 @@ socket.on('updateUserList', function (users) {
   var ol = jQuery('<ol></ol>');
   room_users_map = {};
 
+  $('#online-count').text(String(users.length));
+
   users.forEach(function (user) {
     room_users_map[user.id] = user;
+    if (user.id === socket.id && user.room) {
+      currentRoomName = user.room;
+      currentUserName = user.name;
+      $('#header-room-title').text('# ' + user.room);
+      $('#sidebar-room-name').text('# ' + user.room);
+    }
+
     var isSelf = user.id === socket.id;
-    var displayName = isSelf ? user.name + ' (You)' : user.name;
-    var list = $('<li></li>').text(displayName);
-    list.attr('class', 'user-list');
+    var status = user.status || 'online';
+    var statusLabel = status === 'dnd' ? ' (DND)' : status === 'away' ? ' (Away)' : '';
+    var displayName = isSelf ? user.name + ' (You)' : user.name + statusLabel;
+
+    var list = $('<li></li>').attr('class', 'user-list');
+    var nameRow = $('<div></div>');
+    var dot = $('<span></span>').attr('class', 'user-status-dot status-' + status);
+    nameRow.append(dot).append(document.createTextNode(displayName));
+    list.append(nameRow);
     ol.append(list);
 
     if (!isSelf) {
@@ -481,7 +1221,6 @@ socket.on('updateUserList', function (users) {
     }
   });
 
-  // Clean up pending call alerts if the caller disconnected
   if (caller_id && !room_users_map[caller_id]) {
     clearRingTimeout();
     caller_id = '';
@@ -531,6 +1270,7 @@ document.getElementsByClassName('close')[0].addEventListener('click', function (
   var private_message_button = document.getElementsByClassName('private-message-send');
   private_message_button[0].setAttribute('id', '');
   document.getElementById('private_messages_list').innerHTML = '';
+  $('#private-typing-indicator').addClass('hide-element').text('');
   $('#video-call-receive-section').addClass('accept-reject-video-call');
   $('#call-receive-section').addClass('accept-reject-call');
 });
@@ -542,16 +1282,7 @@ $('#myModal').modal({
 });
 
 socket.on('newMessage', function (message) {
-  var formattedTime = moment(message.createdAt).format('h:mm a');
-  var template = jQuery('#message-template').html();
-  var html = Mustache.render(template, {
-    text: message.text,
-    from: message.from,
-    createdAt: formattedTime,
-  });
-
-  jQuery('#messages').append(html);
-  scrollToBottom('#messages');
+  appendRoomMessageItem(message);
 });
 
 socket.on('newPrivateMessage', function (message) {
@@ -567,6 +1298,7 @@ socket.on('newPrivateMessage', function (message) {
   var slice_id = getActivePrivateUserId();
 
   if (slice_id === message.user.id) {
+    $('#private-typing-indicator').addClass('hide-element').text('');
     var template = jQuery('#private-message-template').html();
     var html = Mustache.render(template, {
       text: message.message,
@@ -618,16 +1350,25 @@ socket.on('privateMessageSuccessfulAdd', function (message) {
 });
 
 socket.on('newLocationMessage', function (message) {
-  var formattedTime = moment(message.createdAt).format('h:mm a');
-  var template = jQuery('#location-message-template').html();
-  var html = Mustache.render(template, {
-    from: message.from,
-    url: message.url,
-    createdAt: formattedTime,
-  });
+  appendRoomMessageItem(message);
+});
 
-  jQuery('#messages').append(html);
-  scrollToBottom('#messages');
+jQuery('[name=message]').on('input', function () {
+  socket.emit('typing:start');
+  if (roomTypingStopTimeout) clearTimeout(roomTypingStopTimeout);
+  roomTypingStopTimeout = setTimeout(function () {
+    socket.emit('typing:stop');
+  }, 1500);
+});
+
+$('[name=private-message]').on('input', function () {
+  var targetId = getActivePrivateUserId();
+  if (!targetId) return;
+  socket.emit('private:typing', { userid: targetId, isTyping: true });
+  if (privateTypingStopTimeout) clearTimeout(privateTypingStopTimeout);
+  privateTypingStopTimeout = setTimeout(function () {
+    socket.emit('private:typing', { userid: targetId, isTyping: false });
+  }, 1500);
 });
 
 $('#private-message-form').on('submit', function (e) {
@@ -637,6 +1378,9 @@ $('#private-message-form').on('submit', function (e) {
   var slice_id = getActivePrivateUserId();
 
   if (!text || !text.trim() || !slice_id) return;
+
+  if (privateTypingStopTimeout) clearTimeout(privateTypingStopTimeout);
+  socket.emit('private:typing', { userid: slice_id, isTyping: false });
 
   socket.emit('createPrivateMessage', {
     message: text,
@@ -651,6 +1395,9 @@ jQuery('#message-form').on('submit', function (e) {
   var messageTextbox = jQuery('[name=message]');
   var text = messageTextbox.val();
   if (!text || !text.trim()) return;
+
+  if (roomTypingStopTimeout) clearTimeout(roomTypingStopTimeout);
+  socket.emit('typing:stop');
 
   socket.emit(
     'createMessage',
@@ -673,14 +1420,18 @@ locationButton.on('click', function () {
 
   navigator.geolocation.getCurrentPosition(
     function (position) {
-      locationButton.removeAttr('disabled').text('Send location');
+      locationButton
+        .removeAttr('disabled')
+        .html('<i class="fa fa-map-marker"></i> <span>Send location</span>');
       socket.emit('createLocationMessage', {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
       });
     },
     function () {
-      locationButton.removeAttr('disabled').text('Send location');
+      locationButton
+        .removeAttr('disabled')
+        .html('<i class="fa fa-map-marker"></i> <span>Send location</span>');
       alert('Unable to fetch location.');
     }
   );
@@ -698,7 +1449,9 @@ privatelocation.on('click', function () {
 
   navigator.geolocation.getCurrentPosition(
     function (position) {
-      privatelocation.removeAttr('disabled').text('Send location');
+      privatelocation
+        .removeAttr('disabled')
+        .html('<i class="fa fa-map-marker"></i> <span>Send location</span>');
       socket.emit('createPrivateLocationMessage', {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
@@ -706,7 +1459,9 @@ privatelocation.on('click', function () {
       });
     },
     function () {
-      privatelocation.removeAttr('disabled').text('Send location');
+      privatelocation
+        .removeAttr('disabled')
+        .html('<i class="fa fa-map-marker"></i> <span>Send location</span>');
       alert('Unable to fetch location.');
     }
   );
@@ -843,7 +1598,6 @@ socket.on('incomingCall', function (user) {
 
     var activeId = getActivePrivateUserId();
     if (activeId === '') {
-      // Automatically open caller's modal so user can immediately Accept or Reject
       openPrivateModalForUser(user.id, user.name);
       $('#call-receive-section').removeClass('accept-reject-call');
       $('#audio-call').attr('disabled', true);
@@ -869,7 +1623,7 @@ socket.on('incomingCall', function (user) {
 
 socket.on('userBusy', function () {
   end_call();
-  alert('User busy. Try again after some time.');
+  alert('User is currently busy or on Do Not Disturb.');
 });
 
 $('#audio-call-start').on('click', function () {
@@ -881,30 +1635,7 @@ $('#audio-call-start').on('click', function () {
     .getUserMedia(constraints)
     .then(function (mediaStream) {
       activeMediaStream = mediaStream;
-      var mediaRecorder = new MediaRecorder(mediaStream);
-      activeMediaRecorder = mediaRecorder;
-
-      mediaRecorder.onstart = function () {
-        this.chunks = [];
-      };
-      mediaRecorder.ondataavailable = function (e) {
-        if (e.data && e.data.size > 0) {
-          this.chunks.push(e.data);
-        }
-      };
-      mediaRecorder.onstop = function () {
-        if (!calling) return;
-        var blob = new Blob(this.chunks, { type: 'audio/ogg; codecs=opus' });
-        socket.emit('audioCall', { blob: blob, userid: userid });
-      };
-
-      mediaRecorder.start();
-      audio_message = setInterval(function () {
-        if (mediaRecorder.state === 'recording') {
-          mediaRecorder.stop();
-          mediaRecorder.start();
-        }
-      }, 1000);
+      startPrivateSfuSession(userid, 'audio', mediaStream);
     })
     .catch(function (err) {
       console.error('Unable to access microphone:', err);
@@ -963,17 +1694,17 @@ $('#show-people').on('click', function () {
   if ($('#chat__sidebar').hasClass('hide-show-people')) {
     chat_sidebar.classList.remove('hide-show-people');
     show_people.classList.remove('change-button-position');
-    change_arrow.classList.add('fa-arrow-right');
-    change_arrow.classList.remove('fa-arrow-left');
+    change_arrow.classList.add('fa-bars');
+    change_arrow.classList.remove('fa-times');
   } else {
     chat_sidebar.classList.add('hide-show-people');
     show_people.classList.add('change-button-position');
-    change_arrow.classList.remove('fa-arrow-right');
-    change_arrow.classList.add('fa-arrow-left');
+    change_arrow.classList.remove('fa-bars');
+    change_arrow.classList.add('fa-times');
   }
 });
 
-// Video Call Section
+// 1-to-1 Video Call Section (powered by werift SFU)
 $('#video-call').on('click', function () {
   var userid = getActivePrivateUserId();
   if (!userid) return;
@@ -995,7 +1726,6 @@ socket.on('incomingVideoCall', function (user) {
 
     var activeId = getActivePrivateUserId();
     if (activeId === '') {
-      // Automatically open caller's modal so user can immediately Accept or Reject
       openPrivateModalForUser(user.id, user.name);
       $('#video-call-receive-section').removeClass('accept-reject-video-call');
       $('#audio-call').attr('disabled', true);
@@ -1020,7 +1750,7 @@ socket.on('incomingVideoCall', function (user) {
 
 socket.on('userVideoBusy', function () {
   end_video_call();
-  alert('User busy. Try again after some time.');
+  alert('User is currently busy or on Do Not Disturb.');
 });
 
 $('#accept-video-call').on('click', function () {
@@ -1065,30 +1795,7 @@ $('#video-call-start').on('click', function () {
         $('#self-video').removeClass('self-video');
       }
 
-      var mediaRecorder = new MediaRecorder(mediaStream);
-      activeMediaRecorder = mediaRecorder;
-
-      mediaRecorder.onstart = function () {
-        this.chunks = [];
-      };
-      mediaRecorder.ondataavailable = function (e) {
-        if (e.data && e.data.size > 0) {
-          this.chunks.push(e.data);
-        }
-      };
-      mediaRecorder.onstop = function () {
-        if (!calling) return;
-        var blob = new Blob(this.chunks, { type: 'video/webm; codecs=vp9' });
-        socket.emit('videoCall', { blob: blob, userid: userid });
-      };
-
-      mediaRecorder.start();
-      audio_message = setInterval(function () {
-        if (mediaRecorder.state === 'recording') {
-          mediaRecorder.stop();
-          mediaRecorder.start();
-        }
-      }, 1000);
+      startPrivateSfuSession(userid, 'video', mediaStream);
     })
     .catch(function (err) {
       console.error('Unable to access camera/microphone:', err);

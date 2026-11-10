@@ -3,28 +3,37 @@
 
 <head>
   <meta charset="utf-8">
-  <title>Join | ChatApp</title>
+  <title>Join Workspace | NexusChat SFU</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
   <link rel="stylesheet" href="/css/styles.css">
 </head>
 
 <body class="centered-form">
   <div class="centered-form__form">
     <form action="/chat.html" id="join-form">
-      <div class="form-field">
-        <h3>Join a Chat</h3>
+      <div class="brand-header">
+        <div class="brand-logo">
+          <i class="fa fa-comments" aria-hidden="true"></i>
+        </div>
+        <h3>NexusChat</h3>
+        <p class="brand-subtitle">Real-time Messaging &amp; WebRTC SFU Conferencing</p>
       </div>
       <div class="form-field">
-        <label for="name-input">Display name</label>
-        <input id="name-input" type="text" name="name" maxlength="50" placeholder="Enter your name" autofocus required autocomplete="off" />
+        <label for="name-input"><i class="fa fa-user-o" aria-hidden="true"></i> Display Name</label>
+        <input id="name-input" type="text" name="name" maxlength="50" placeholder="e.g. Ashik" autofocus required autocomplete="off" />
       </div>
       <div class="form-field">
-        <label for="room-input">Room name</label>
-        <input id="room-input" type="text" name="room" list="active-rooms" maxlength="50" placeholder="Enter or select a room" required autocomplete="off" />
+        <label for="room-input"><i class="fa fa-hashtag" aria-hidden="true"></i> Room / Channel</label>
+        <input id="room-input" type="text" name="room" list="active-rooms" maxlength="50" placeholder="e.g. Engineering" required autocomplete="off" />
         <datalist id="active-rooms"></datalist>
+        <div id="active-rooms-pills" class="active-rooms-pills"></div>
       </div>
       <div class="form-field">
-        <button type="submit">Join</button>
+        <button type="submit" class="btn-join-primary">
+          <span>Join Room</span>
+          <i class="fa fa-arrow-right" aria-hidden="true"></i>
+        </button>
       </div>
     </form>
   </div>
@@ -35,16 +44,32 @@
       var nameInput = document.getElementById('name-input');
       var roomInput = document.getElementById('room-input');
       var datalist = document.getElementById('active-rooms');
+      var pillsContainer = document.getElementById('active-rooms-pills');
 
       if (window.fetch && datalist) {
         fetch('/api/rooms')
           .then(function (res) { return res.json(); })
           .then(function (data) {
-            if (data && Array.isArray(data.rooms)) {
+            if (data && Array.isArray(data.rooms) && data.rooms.length > 0) {
+              var label = document.createElement('span');
+              label.className = 'pills-label';
+              label.textContent = 'Active rooms:';
+              pillsContainer.appendChild(label);
+
               data.rooms.forEach(function (room) {
                 var option = document.createElement('option');
                 option.value = room;
                 datalist.appendChild(option);
+
+                var pill = document.createElement('button');
+                pill.type = 'button';
+                pill.className = 'room-pill';
+                pill.textContent = '# ' + room;
+                pill.addEventListener('click', function () {
+                  roomInput.value = room;
+                  roomInput.focus();
+                });
+                pillsContainer.appendChild(pill);
               });
             }
           })

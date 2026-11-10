@@ -29,6 +29,9 @@ const downloadFile = (req, res, next) => {
     return res.status(404).json({ error: 'File not found.' });
   }
 
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+
   return res.download(filePath, safeFilename, (err) => {
     if (err && !res.headersSent) {
       next(err);

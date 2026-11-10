@@ -1,3 +1,5 @@
+const VALID_STATUSES = new Set(['online', 'away', 'dnd']);
+
 class Users {
   constructor() {
     this.users = [];
@@ -25,12 +27,21 @@ class Users {
     );
   }
 
-  addUser(id, name, room) {
+  addUser(id, name, room, status = 'online') {
     const cleanName = typeof name === 'string' ? name.trim() : name;
     const cleanRoom = this.getCanonicalRoom(room);
+    const cleanStatus = VALID_STATUSES.has(status) ? status : 'online';
     this.removeUser(id);
-    const user = { id, name: cleanName, room: cleanRoom };
+    const user = { id, name: cleanName, room: cleanRoom, status: cleanStatus };
     this.users.push(user);
+    return user;
+  }
+
+  updateUserStatus(id, status) {
+    if (!VALID_STATUSES.has(status)) return null;
+    const user = this.getUser(id);
+    if (!user) return null;
+    user.status = status;
     return user;
   }
 
@@ -64,4 +75,4 @@ class Users {
   }
 }
 
-module.exports = { Users };
+module.exports = { Users, VALID_STATUSES };

@@ -11,31 +11,44 @@ describe('Users State Manager', () => {
         id: '1',
         name: 'Mike',
         room: 'Node Course',
+        status: 'online',
       },
       {
         id: '2',
         name: 'Jen',
         room: 'React Course',
+        status: 'online',
       },
       {
         id: '3',
         name: 'Julie',
         room: 'Node Course',
+        status: 'online',
       },
     ];
   });
 
-  it('should add a new user and trim whitespace', () => {
+  it('should add a new user with default online status and trim whitespace', () => {
     const customUsers = new Users();
     const user = {
       id: '123',
       name: 'Andrew',
       room: 'The Office Fans',
+      status: 'online',
     };
     const resUser = customUsers.addUser(user.id, '  Andrew  ', '  The Office Fans  ');
 
     expect(resUser).toEqual(user);
     expect(customUsers.users).toEqual([user]);
+  });
+
+  it('should update user presence status (online, away, dnd) and reject invalid statuses', () => {
+    const updated = users.updateUserStatus('1', 'dnd');
+    expect(updated.status).toBe('dnd');
+    expect(users.getUser('1').status).toBe('dnd');
+
+    const invalid = users.updateUserStatus('1', 'invisible');
+    expect(invalid).toBeNull();
   });
 
   it('should normalize room name case-insensitively to match existing room', () => {
@@ -91,15 +104,15 @@ describe('Users State Manager', () => {
     const userList = users.getUserList('Node Course');
 
     expect(userList).toEqual([
-      { id: '1', name: 'Mike', room: 'Node Course' },
-      { id: '3', name: 'Julie', room: 'Node Course' },
+      { id: '1', name: 'Mike', room: 'Node Course', status: 'online' },
+      { id: '3', name: 'Julie', room: 'Node Course', status: 'online' },
     ]);
   });
 
   it('should return user objects for React Course', () => {
     const userList = users.getUserList('React Course');
 
-    expect(userList).toEqual([{ id: '2', name: 'Jen', room: 'React Course' }]);
+    expect(userList).toEqual([{ id: '2', name: 'Jen', room: 'React Course', status: 'online' }]);
   });
 
   it('should return user names list and active rooms list', () => {

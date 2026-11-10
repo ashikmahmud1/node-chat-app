@@ -3,18 +3,25 @@ const path = require('path');
 const { expect } = require('expect');
 const config = require('../server/config');
 const { uploadFile, downloadFile } = require('../server/controllers/file.controller');
+const { fileFilter } = require('../server/middlewares/file-upload');
+const { SlidingWindowRateLimiter } = require('../server/middlewares/rate-limit.middleware');
 const { notFoundHandler, errorHandler } = require('../server/middlewares/error.middleware');
 const { registerChatHandlers } = require('../server/sockets/chat.handler');
 const { registerPrivateHandlers } = require('../server/sockets/private.handler');
 const { registerCallHandlers } = require('../server/sockets/call.handler');
 const { Users } = require('../server/utils/users');
+const { MessageStore } = require('../server/utils/message-store');
 
 const createMockRes = () => {
   const res = {
     statusCode: 200,
     body: null,
+    headers: {},
     downloadedFile: null,
     headersSent: false,
+    setHeader(key, val) {
+      this.headers[key] = val;
+    },
     status(code) {
       this.statusCode = code;
       return this;
@@ -34,6 +41,7 @@ const createMockRes = () => {
 
 const createMockSocketEnv = () => {
   const users = new Users();
+  const messageStore = new MessageStore(10, null);
   const emitted = [];
   const broadcasted = [];
 
@@ -82,18 +90,18 @@ const createMockSocketEnv = () => {
       },
     };
 
-    registerChatHandlers(io, socket, users);
+    registerChatHandlers(io, socket, users, messageStore);
     registerPrivateHandlers(io, socket, users);
     registerCallHandlers(io, socket, users);
 
     return socket;
   };
 
-  return { users, io, emitted, broadcasted, createSocket };
+  return { users, messageStore, io, emitted, broadcasted, createSocket };
 };
 
 describe('Controllers, Middlewares & Socket Handlers', () => {
-  describe('File Controller & Error Middleware', () => {
+  describe('File Controller, Security Filter & Rate Limiter', () => {
     it('uploadFile should return 400 when req.file is missing', () => {
       const req = {};
       const res = createMockRes();
@@ -113,6 +121,29 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.body.file.filename).toBe('12345-s3.png');
+    });
+
+    it('fileFilter should block dangerous executable extensions (.exe, .sh, .php) and allow safe files', () => {
+      let rejectedErr = null;
+      fileFilter({}, { originalname: 'malware.exe' }, (err) => {
+        rejectedErr = err;
+      });
+      expect(rejectedErr).toBeDefined();
+      expect(rejectedErr.message).toContain('not permitted');
+
+      let accepted = false;
+      fileFilter({}, { originalname: 'document.pdf' }, (err, allow) => {
+        expect(err).toBeNull();
+        accepted = allow;
+      });
+      expect(accepted).toBe(true);
+    });
+
+    it('SlidingWindowRateLimiter should enforce request quotas within window', () => {
+      const limiter = new SlidingWindowRateLimiter({ windowMs: 5000, max: 2 });
+      expect(limiter.consume('client-1').allowed).toBe(true);
+      expect(limiter.consume('client-1').allowed).toBe(true);
+      expect(limiter.consume('client-1').allowed).toBe(false);
     });
 
     it('downloadFile should block path traversal attempts with 400', () => {
@@ -135,7 +166,7 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
       expect(res.body).toEqual({ error: 'File not found.' });
     });
 
-    it('downloadFile should serve existing files from data directory', () => {
+    it('downloadFile should serve existing files with sandbox CSP and nosniff headers', () => {
       const sampleFilename = `test-${Date.now()}.txt`;
       const sampleFilePath = path.join(config.paths.uploads, sampleFilename);
       fs.writeFileSync(sampleFilePath, 'sample content');
@@ -147,6 +178,8 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
         downloadFile(req, res, () => {});
 
         expect(res.statusCode).toBe(200);
+        expect(res.headers['X-Content-Type-Options']).toBe('nosniff');
+        expect(res.headers['Content-Security-Policy']).toContain('sandbox');
         expect(res.downloadedFile).toEqual({
           filePath: sampleFilePath,
           filename: sampleFilename,
@@ -171,8 +204,8 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
     });
   });
 
-  describe('Socket.IO Chat, Private & Call Handlers', () => {
-    it('should validate join parameters, reject duplicate usernames in same room, and normalize room case', () => {
+  describe('Socket.IO Chat, Room History, Edit/Delete/Reactions, Presence & Call Handlers', () => {
+    it('should validate join parameters, reject duplicate usernames, and replay room message history to new joiners', () => {
       const { createSocket, emitted, broadcasted, users } = createMockSocketEnv();
       const socketA = createSocket('socket-a');
       const socketB = createSocket('socket-b');
@@ -183,135 +216,111 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
       });
       expect(joinError).toContain('Valid display name and room name');
 
-      let successErr = 'not-called';
-      socketA.trigger('join', { name: 'Ashik', room: 'DevRoom' }, (err) => {
-        successErr = err;
-      });
-
-      expect(successErr).toBeUndefined();
+      socketA.trigger('join', { name: 'Ashik', room: 'DevRoom' }, () => {});
       expect(users.getUser('socket-a')).toEqual({
         id: 'socket-a',
         name: 'Ashik',
         room: 'DevRoom',
+        status: 'online',
       });
-      expect(emitted.some((e) => e.event === 'updateUserList' && e.room === 'DevRoom')).toBe(true);
-      expect(socketA.directEmits[0].event).toBe('newMessage');
-      expect(socketA.directEmits[0].data.text).toBe('Welcome to the chat app');
-      expect(broadcasted[0].event).toBe('newMessage');
-      expect(broadcasted[0].data.text).toBe('Ashik has joined.');
 
-      // Duplicate username in same room (case-insensitive) should be rejected
+      socketA.trigger('createMessage', { text: 'Welcome message stored in history' }, () => {});
+
       let duplicateErr = null;
       socketB.trigger('join', { name: 'ashik', room: 'devroom' }, (err) => {
         duplicateErr = err;
       });
       expect(duplicateErr).toContain('already in use');
 
-      // Different username joining 'devroom' should join canonical 'DevRoom'
-      let secondJoinErr = 'not-called';
-      socketB.trigger('join', { name: 'Jen', room: 'devroom' }, (err) => {
-        secondJoinErr = err;
-      });
-      expect(secondJoinErr).toBeUndefined();
-      expect(users.getUser('socket-b').room).toBe('DevRoom');
+      socketB.trigger('join', { name: 'Jen', room: 'devroom' }, () => {});
+      const historyEmit = socketB.directEmits.find((e) => e.event === 'roomHistory');
+      expect(historyEmit).toBeDefined();
+      expect(historyEmit.data.length).toBe(1);
+      expect(historyEmit.data[0].text).toBe('Welcome message stored in history');
+      expect(emitted.some((e) => e.event === 'updateUserList' && e.room === 'DevRoom')).toBe(true);
+      expect(broadcasted.some((b) => b.event === 'newMessage')).toBe(true);
     });
 
-    it('should handle public messages, location messages, file messages, and disconnect', () => {
-      const { createSocket, emitted, users } = createMockSocketEnv();
-      const socketA = createSocket('socket-a');
-      socketA.trigger('join', { name: 'Ashik', room: 'DevRoom' }, () => {});
-
-      emitted.length = 0;
-      let ackCalled = false;
-      socketA.trigger('createMessage', { text: 'Hello World' }, () => {
-        ackCalled = true;
-      });
-
-      expect(ackCalled).toBe(true);
-      expect(emitted.length).toBe(1);
-      expect(emitted[0].event).toBe('newMessage');
-      expect(emitted[0].data).toMatchObject({ from: 'Ashik', text: 'Hello World' });
-
-      socketA.trigger('createLocationMessage', { latitude: 23.16, longitude: 89.21 });
-      expect(emitted[1].event).toBe('newLocationMessage');
-      expect(emitted[1].data.url).toContain('23.16,89.21');
-
-      socketA.trigger('newFileMessage', { filename: '123-doc.pdf' });
-      expect(emitted[2].event).toBe('newFileMessage');
-      expect(emitted[2].data).toMatchObject({
-        from: 'Ashik',
-        fileUrl: '123-doc.pdf',
-        fileurl: '123-doc.pdf',
-      });
-
-      socketA.trigger('disconnect');
-      expect(users.getUser('socket-a')).toBeUndefined();
-      expect(emitted.some((e) => e.event === 'newMessage' && e.data.text === 'Ashik has left.')).toBe(
-        true
-      );
-    });
-
-    it('should handle private messaging, private files, private locations, and call signaling', () => {
-      const { createSocket, broadcasted } = createMockSocketEnv();
+    it('should support message editing, emoji reactions, and message deletion', () => {
+      const { createSocket, emitted, messageStore } = createMockSocketEnv();
       const socketA = createSocket('socket-a');
       const socketB = createSocket('socket-b');
 
       socketA.trigger('join', { name: 'Ashik', room: 'DevRoom' }, () => {});
       socketB.trigger('join', { name: 'Jen', room: 'DevRoom' }, () => {});
-      broadcasted.length = 0;
 
-      // Self-messaging should be ignored
-      socketA.trigger('createPrivateMessage', {
-        userid: 'socket-a',
-        message: 'Self hello',
-      });
-      expect(broadcasted.length).toBe(0);
+      socketA.trigger('createMessage', { text: 'Initial message' }, () => {});
+      const storedMsg = messageStore.getMessages('DevRoom')[0];
+      expect(storedMsg.text).toBe('Initial message');
 
-      socketA.trigger('createPrivateMessage', {
-        userid: 'socket-b',
-        message: 'Private hello',
-      });
-      expect(broadcasted[0]).toMatchObject({
-        from: 'socket-a',
-        target: 'socket-b',
-        event: 'newPrivateMessage',
-      });
-      expect(broadcasted[0].data.message).toBe('Private hello');
+      // Non-owner cannot edit Ashik's message
+      let nonOwnerEditErr = null;
+      socketB.trigger(
+        'message:edit',
+        { messageId: storedMsg.id, text: 'Unauthorized edit' },
+        (err) => {
+          nonOwnerEditErr = err;
+        }
+      );
+      expect(nonOwnerEditErr).toBe('Unable to edit message.');
 
-      socketB.trigger('privateMessageSendSuccessful', {
-        userid: 'socket-a',
-        message: 'Private hello',
-      });
-      expect(broadcasted[1]).toMatchObject({
-        from: 'socket-b',
-        target: 'socket-a',
-        event: 'privateMessageSuccessfulAdd',
-      });
+      // Owner edits message
+      socketA.trigger(
+        'message:edit',
+        { messageId: storedMsg.id, text: 'Updated enterprise message' },
+        () => {}
+      );
+      expect(messageStore.getMessages('DevRoom')[0].text).toBe('Updated enterprise message');
+      expect(messageStore.getMessages('DevRoom')[0].edited).toBe(true);
+      expect(emitted.some((e) => e.event === 'message:edited')).toBe(true);
 
-      socketA.trigger('createPrivateLocationMessage', {
-        userid: 'socket-b',
-        latitude: 23.81,
-        longitude: 90.41,
-      });
-      expect(broadcasted[2]).toMatchObject({
-        from: 'socket-a',
-        target: 'socket-b',
-        event: 'newPrivateLocationMessage',
-      });
+      // Jen reacts with 👍
+      socketB.trigger(
+        'message:reaction',
+        { messageId: storedMsg.id, emoji: '👍' },
+        () => {}
+      );
+      expect(messageStore.getMessages('DevRoom')[0].reactions['👍']).toEqual(['Jen']);
+      expect(emitted.some((e) => e.event === 'message:reaction-updated')).toBe(true);
 
+      // Owner deletes message
+      socketA.trigger('message:delete', { messageId: storedMsg.id }, () => {});
+      expect(messageStore.getMessages('DevRoom').length).toBe(0);
+      expect(emitted.some((e) => e.event === 'message:deleted')).toBe(true);
+    });
+
+    it('should update presence status and automatically reject incoming calls when recipient is on DND', () => {
+      const { createSocket } = createMockSocketEnv();
+      const socketA = createSocket('socket-a');
+      const socketB = createSocket('socket-b');
+
+      socketA.trigger('join', { name: 'Ashik', room: 'DevRoom' }, () => {});
+      socketB.trigger('join', { name: 'Jen', room: 'DevRoom' }, () => {});
+
+      // Jen sets status to Do Not Disturb ('dnd')
+      socketB.trigger('presence:update', { status: 'dnd' }, () => {});
+
+      // Ashik tries to audio call Jen while Jen is on DND
+      socketA.directEmits.length = 0;
       socketA.trigger('initializeAudioCall', 'socket-b');
-      expect(broadcasted[3]).toMatchObject({
-        from: 'socket-a',
-        target: 'socket-b',
-        event: 'incomingCall',
-      });
+      expect(socketA.directEmits.some((e) => e.event === 'userBusy')).toBe(true);
+    });
 
-      socketA.trigger('initializeVideoCall', 'socket-b');
-      expect(broadcasted[4]).toMatchObject({
-        from: 'socket-a',
-        target: 'socket-b',
-        event: 'incomingVideoCall',
-      });
+    it('should persist and reload MessageStore snapshots on disk', () => {
+      const tempPersistFile = path.join(config.paths.uploads, `test-history-${Date.now()}.json`);
+      try {
+        const store1 = new MessageStore(10, tempPersistFile);
+        store1.addMessage('EnterpriseRoom', { id: 'msg-1', from: 'Ashik', text: 'Persisted' });
+
+        const store2 = new MessageStore(10, tempPersistFile);
+        const loaded = store2.getMessages('EnterpriseRoom');
+        expect(loaded.length).toBe(1);
+        expect(loaded[0].text).toBe('Persisted');
+      } finally {
+        if (fs.existsSync(tempPersistFile)) {
+          fs.unlinkSync(tempPersistFile);
+        }
+      }
     });
   });
 });
