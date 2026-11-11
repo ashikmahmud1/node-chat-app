@@ -341,6 +341,11 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
       socketA.directEmits.length = 0;
       socketA.trigger('initializeAudioCall', 'socket-b');
       expect(socketA.directEmits.some((e) => e.event === 'userBusy')).toBe(true);
+
+      // Ashik tries to call an offline user
+      socketA.directEmits.length = 0;
+      socketA.trigger('initializeVideoCall', 'offline-socket-id');
+      expect(socketA.directEmits.some((e) => e.event === 'userOffline')).toBe(true);
     });
 
     it('should support live group switching via room:switch and broadcast updateRoomList', () => {

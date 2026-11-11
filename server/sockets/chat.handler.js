@@ -107,11 +107,12 @@ const registerChatHandlers = (
     const history = messageStore ? messageStore.getMessages(targetRoom) : [];
     if (history.length > 0) {
       socket.emit('roomHistory', history);
+    } else {
+      socket.emit('newMessage', generateMessage('Admin', `Welcome to #${targetRoom}`));
     }
 
     io.to(targetRoom).emit('updateUserList', users.getUserList(targetRoom));
     broadcastRoomList();
-    socket.emit('newMessage', generateMessage('Admin', `Welcome to #${targetRoom}`));
     socket.broadcast
       .to(targetRoom)
       .emit('newMessage', generateMessage('Admin', `${currentUser.name} has joined.`));

@@ -8,8 +8,20 @@ class SlidingWindowRateLimiter {
     this.buckets = new Map();
   }
 
+  pruneExpired(now = Date.now()) {
+    for (const [key, record] of this.buckets.entries()) {
+      if (now >= record.resetAt) {
+        this.buckets.delete(key);
+      }
+    }
+  }
+
   consume(key) {
     const now = Date.now();
+    if (this.buckets.size > 1000) {
+      this.pruneExpired(now);
+    }
+
     const record = this.buckets.get(key);
 
     if (!record || now >= record.resetAt) {

@@ -84,13 +84,29 @@ $(function () {
   var groupUnreadCounts = {};
   var privateSfuSessionId = '';
   var privateSfuPc = null;
+  var privateNegotiationChain = Promise.resolve();
   var roomSfuSessionId = '';
   var roomSfuPc = null;
+  var roomNegotiationChain = Promise.resolve();
   var roomLocalStream = null;
   var roomScreenStream = null;
   var roomCallActive = false;
   var roomCallTimerTimeout = null;
   var roomTrackOwners = {};
+
+  // Fetch dynamic WebRTC STUN/TURN configuration from backend
+  if (window.fetch) {
+    fetch('/api/rtc-config')
+      .then(function (res) {
+        return res.json();
+      })
+      .then(function (data) {
+        if (data && Array.isArray(data.iceServers) && data.iceServers.length > 0) {
+          rtcIceServers = data.iceServers;
+        }
+      })
+      .catch(function () {});
+  }
 
   // Message Tracking, Deduplication & Typing
   var rendered_message_ids = {};
@@ -553,6 +569,7 @@ $(function () {
       } catch (e) {}
       privateSfuPc = null;
     }
+    privateNegotiationChain = Promise.resolve();
   }
 
   function stopMediaStream() {
@@ -572,6 +589,9 @@ $(function () {
     var otherVideo = document.getElementById('other-video');
     if (otherVideo) {
       otherVideo.srcObject = null;
+    }
+    if (calling_audio) {
+      calling_audio.srcObject = null;
     }
     $('#private-video-stage').addClass('hide-element');
   }
@@ -622,24 +642,37 @@ $(function () {
       }
     };
 
-    pc.createOffer()
-      .then(function (offer) {
-        return pc.setLocalDescription(offer);
-      })
+    privateNegotiationChain = privateNegotiationChain
       .then(function () {
-        socket.emit(
-          'sfu:join',
-          {
-            sessionId: privateSfuSessionId,
-            mode: mode,
-            sdp: pc.localDescription,
-          },
-          function (res) {
-            if (res && res.ok && res.sdp && privateSfuPc === pc) {
-              pc.setRemoteDescription(new RTCSessionDescription(res.sdp)).catch(function () {});
-            }
-          }
-        );
+        if (privateSfuPc !== pc) return;
+        return pc
+          .createOffer()
+          .then(function (offer) {
+            return pc.setLocalDescription(offer);
+          })
+          .then(function () {
+            return new Promise(function (resolve) {
+              socket.emit(
+                'sfu:join',
+                {
+                  sessionId: privateSfuSessionId,
+                  mode: mode,
+                  sdp: pc.localDescription,
+                },
+                function (res) {
+                  if (res && res.ok && res.sdp && privateSfuPc === pc) {
+                    pc.setRemoteDescription(new RTCSessionDescription(res.sdp))
+                      .then(resolve)
+                      .catch(function () {
+                        resolve();
+                      });
+                  } else {
+                    resolve();
+                  }
+                }
+              );
+            });
+          });
       })
       .catch(function (err) {
         console.error('Personal SFU error:', err);
@@ -701,6 +734,9 @@ $(function () {
   }
 
   function joinRoomSfuCall(mode) {
+    if (personalCallActive) {
+      return alert('Please end your 1-to-1 call before joining a room conference.');
+    }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return alert('WebRTC media devices are not supported in this browser.');
     }
@@ -760,26 +796,39 @@ $(function () {
           renderRoomVideoTile(streamId, label, remoteStream, false);
         };
 
-        return pc
-          .createOffer()
-          .then(function (offer) {
-            return pc.setLocalDescription(offer);
-          })
+        roomNegotiationChain = roomNegotiationChain
           .then(function () {
-            socket.emit(
-              'sfu:join',
-              {
-                sessionId: roomSfuSessionId,
-                mode: mode,
-                sdp: pc.localDescription,
-              },
-              function (res) {
-                if (res && res.ok && res.sdp && roomSfuPc === pc) {
-                  pc.setRemoteDescription(new RTCSessionDescription(res.sdp)).catch(function () {});
-                }
-              }
-            );
-          });
+            if (roomSfuPc !== pc) return;
+            return pc
+              .createOffer()
+              .then(function (offer) {
+                return pc.setLocalDescription(offer);
+              })
+              .then(function () {
+                return new Promise(function (resolve) {
+                  socket.emit(
+                    'sfu:join',
+                    {
+                      sessionId: roomSfuSessionId,
+                      mode: mode,
+                      sdp: pc.localDescription,
+                    },
+                    function (res) {
+                      if (res && res.ok && res.sdp && roomSfuPc === pc) {
+                        pc.setRemoteDescription(new RTCSessionDescription(res.sdp))
+                          .then(resolve)
+                          .catch(function () {
+                            resolve();
+                          });
+                      } else {
+                        resolve();
+                      }
+                    }
+                  );
+                });
+              });
+          })
+          .catch(function () {});
       })
       .catch(function (err) {
         console.error('Failed to join Room call:', err);
@@ -873,6 +922,7 @@ $(function () {
       } catch (e) {}
       roomSfuPc = null;
     }
+    roomNegotiationChain = Promise.resolve();
 
     if (roomLocalStream) {
       roomLocalStream.getTracks().forEach(function (track) {
@@ -884,45 +934,78 @@ $(function () {
     var grid = document.getElementById('room-video-grid');
     if (grid) grid.innerHTML = '';
     $('#room-call-stage').addClass('hide-element');
-    $('#room-toggle-mic').removeClass('muted-state');
-    $('#room-toggle-cam').removeClass('muted-state');
+    $('#room-toggle-mic').removeClass('muted-state').find('i').attr('class', 'fa-solid fa-microphone');
+    $('#room-toggle-cam').removeClass('muted-state').find('i').attr('class', 'fa-solid fa-video');
   }
 
-  // SFU Signaling Listeners
+  // SFU Signaling Listeners (Serialized Negotiation Queue)
   socket.on('sfu:offer', function (data) {
     if (!data || !data.sessionId || !data.sdp) return;
 
     if (data.trackOwnerMap) {
       Object.keys(data.trackOwnerMap).forEach(function (streamId) {
         roomTrackOwners[streamId] = data.trackOwnerMap[streamId];
+        var ownerInfo = data.trackOwnerMap[streamId];
+        if (ownerInfo && ownerInfo.name) {
+          var tileId = 'sfu-tile-' + streamId.replace(/[^a-zA-Z0-9_-]/g, '_');
+          var existingTile = document.getElementById(tileId);
+          if (existingTile) {
+            var nameSpan = existingTile.querySelector('.sfu-video-tile__label span');
+            if (nameSpan) {
+              nameSpan.textContent = ownerInfo.name + (ownerInfo.screenSharing ? ' (Screen)' : '');
+            }
+          }
+        }
       });
     }
 
-    var targetPc = null;
-    if (data.sessionId === roomSfuSessionId) {
-      targetPc = roomSfuPc;
-    } else if (data.sessionId === privateSfuSessionId) {
-      targetPc = privateSfuPc;
-    }
-    if (!targetPc) return;
-
-    targetPc
-      .setRemoteDescription(new RTCSessionDescription(data.sdp))
-      .then(function () {
-        return targetPc.createAnswer();
-      })
-      .then(function (answer) {
-        return targetPc.setLocalDescription(answer);
-      })
-      .then(function () {
-        socket.emit('sfu:answer', {
-          sessionId: data.sessionId,
-          sdp: targetPc.localDescription,
+    if (data.sessionId === roomSfuSessionId && roomSfuPc) {
+      var currentRoomPc = roomSfuPc;
+      roomNegotiationChain = roomNegotiationChain
+        .then(function () {
+          if (roomSfuPc !== currentRoomPc) return;
+          return currentRoomPc
+            .setRemoteDescription(new RTCSessionDescription(data.sdp))
+            .then(function () {
+              return currentRoomPc.createAnswer();
+            })
+            .then(function (answer) {
+              return currentRoomPc.setLocalDescription(answer);
+            })
+            .then(function () {
+              socket.emit('sfu:answer', {
+                sessionId: data.sessionId,
+                sdp: currentRoomPc.localDescription,
+              });
+            });
+        })
+        .catch(function (err) {
+          console.error('Room SFU renegotiation error:', err);
         });
-      })
-      .catch(function (err) {
-        console.error('SFU renegotiation error:', err);
-      });
+    } else if (data.sessionId === privateSfuSessionId && privateSfuPc) {
+      var currentPrivatePc = privateSfuPc;
+      privateNegotiationChain = privateNegotiationChain
+        .then(function () {
+          if (privateSfuPc !== currentPrivatePc) return;
+          return currentPrivatePc
+            .setRemoteDescription(new RTCSessionDescription(data.sdp))
+            .then(function () {
+              return currentPrivatePc.createAnswer();
+            })
+            .then(function (answer) {
+              return currentPrivatePc.setLocalDescription(answer);
+            })
+            .then(function () {
+              socket.emit('sfu:answer', {
+                sessionId: data.sessionId,
+                sdp: currentPrivatePc.localDescription,
+              });
+            });
+        })
+        .catch(function (err) {
+          console.error('Private SFU renegotiation error:', err);
+        });
+    }
   });
 
   socket.on('sfu:candidate', function (data) {
@@ -942,6 +1025,23 @@ $(function () {
     if (!data) return;
     if (data.sessionId === roomSfuSessionId && data.streamId) {
       removeRoomVideoTile(data.streamId);
+    }
+  });
+
+  socket.on('sfu:media-state', function (data) {
+    if (!data || !data.sessionId || !data.streamId) return;
+    if (data.sessionId === roomSfuSessionId) {
+      var tileId = 'sfu-tile-' + data.streamId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      var existingTile = document.getElementById(tileId);
+      if (existingTile && data.name) {
+        var nameSpan = existingTile.querySelector('.sfu-video-tile__label span');
+        if (nameSpan) {
+          var suffix = '';
+          if (data.screenSharing) suffix += ' (Screen)';
+          if (data.audioEnabled === false) suffix += ' (Muted)';
+          nameSpan.textContent = data.name + suffix;
+        }
+      }
     }
   });
 
@@ -986,7 +1086,9 @@ $(function () {
     audioTracks.forEach(function (t) {
       t.enabled = enabled;
     });
-    $('#room-toggle-mic').toggleClass('muted-state', !enabled);
+    var $btn = $('#room-toggle-mic');
+    $btn.toggleClass('muted-state', !enabled);
+    $btn.find('i').attr('class', enabled ? 'fa-solid fa-microphone' : 'fa-solid fa-microphone-slash');
     if (roomSfuSessionId) {
       socket.emit('sfu:media-state', {
         sessionId: roomSfuSessionId,
@@ -1004,7 +1106,9 @@ $(function () {
     videoTracks.forEach(function (t) {
       t.enabled = enabled;
     });
-    $('#room-toggle-cam').toggleClass('muted-state', !enabled);
+    var $btn = $('#room-toggle-cam');
+    $btn.toggleClass('muted-state', !enabled);
+    $btn.find('i').attr('class', enabled ? 'fa-solid fa-video' : 'fa-solid fa-video-slash');
     if (roomSfuSessionId) {
       socket.emit('sfu:media-state', {
         sessionId: roomSfuSessionId,
@@ -1049,31 +1153,6 @@ $(function () {
   $('#clear-search-btn').on('click', function (e) {
     e.preventDefault();
     $('#room-message-search').val('').trigger('input').trigger('focus');
-  });
-
-  // Personal Call Mic/Cam Controls
-  $('#private-toggle-mic-audio, #private-toggle-mic-video').on('click', function (e) {
-    e.preventDefault();
-    if (!activeMediaStream) return;
-    var audioTracks = activeMediaStream.getAudioTracks();
-    if (!audioTracks.length) return;
-    var enabled = !audioTracks[0].enabled;
-    audioTracks.forEach(function (t) {
-      t.enabled = enabled;
-    });
-    $(this).toggleClass('btn-warning', !enabled);
-  });
-
-  $('#private-toggle-cam-video').on('click', function (e) {
-    e.preventDefault();
-    if (!activeMediaStream) return;
-    var videoTracks = activeMediaStream.getVideoTracks();
-    if (!videoTracks.length) return;
-    var enabled = !videoTracks[0].enabled;
-    videoTracks.forEach(function (t) {
-      t.enabled = enabled;
-    });
-    $(this).toggleClass('btn-warning', !enabled);
   });
 
   function renderPrivateMessages(userId) {
@@ -1350,6 +1429,7 @@ $(function () {
   });
 
   socket.on('newPrivateFileMessage', function (info) {
+    if (!info || !info.user) return;
     var formattedTime = moment(info.createdAt).format('h:mm a');
     var filename = info.fileInfo && info.fileInfo.filename ? info.fileInfo.filename : '';
     var message_object = {
@@ -1373,6 +1453,7 @@ $(function () {
   });
 
   socket.on('privateFileSendSuccessful', function (info) {
+    if (!info || !info.user) return;
     var formattedTime = moment(info.createdAt).format('h:mm a');
     var message_object = {
       from: info.user.name,
@@ -1686,6 +1767,7 @@ $(function () {
   });
 
   socket.on('newPrivateMessage', function (message) {
+    if (!message || !message.user) return;
     var formattedTime = moment(message.createdAt).format('h:mm a');
     var message_object = {
       text: message.message,
@@ -1716,6 +1798,7 @@ $(function () {
   });
 
   socket.on('privateMessageSuccessfulAdd', function (message) {
+    if (!message || !message.user) return;
     var formattedTime = moment(message.createdAt).format('h:mm a');
     var message_object = {
       text: message.message,
@@ -1763,7 +1846,11 @@ $(function () {
     if (roomTypingStopTimeout) clearTimeout(roomTypingStopTimeout);
     socket.emit('typing:stop');
 
-    socket.emit('createMessage', { text: text }, function () {});
+    socket.emit('createMessage', { text: text }, function (err) {
+      if (err) {
+        alert(err);
+      }
+    });
   }
 
   $('#message-input').on('keydown', function (e) {
@@ -1872,6 +1959,7 @@ $(function () {
   });
 
   socket.on('newPrivateLocationMessage', function (message) {
+    if (!message || !message.location || !message.user) return;
     var formattedTime = moment(message.location.createdAt).format('h:mm a');
     var message_object = {
       from: message.location.from,
@@ -1894,6 +1982,7 @@ $(function () {
   });
 
   socket.on('locationMessageSuccessful', function (message) {
+    if (!message || !message.message || !message.message.location) return;
     var formattedTime = moment(message.message.location.createdAt).format('h:mm a');
     var message_object = {
       from: message.message.location.from,
@@ -1951,8 +2040,8 @@ $(function () {
     } else {
       $('#personal-toggle-cam').addClass('hide-element');
     }
-    $('#personal-toggle-mic').removeClass('muted-state');
-    $('#personal-toggle-cam').removeClass('muted-state');
+    $('#personal-toggle-mic').removeClass('muted-state').find('i').attr('class', 'fa-solid fa-microphone');
+    $('#personal-toggle-cam').removeClass('muted-state').find('i').attr('class', 'fa-solid fa-video');
 
     playRingtone();
 
@@ -2039,8 +2128,8 @@ $(function () {
     } else {
       $('#personal-toggle-cam').addClass('hide-element');
     }
-    $('#personal-toggle-mic').removeClass('muted-state');
-    $('#personal-toggle-cam').removeClass('muted-state');
+    $('#personal-toggle-mic').removeClass('muted-state').find('i').attr('class', 'fa-solid fa-microphone');
+    $('#personal-toggle-cam').removeClass('muted-state').find('i').attr('class', 'fa-solid fa-video');
 
     if (info.mode === 'video') {
       socket.emit('videoCallReceived', info.callerId);
@@ -2311,10 +2400,12 @@ $(function () {
     user_message_dictionary[id].push(message);
   }
 
-  // Keyboard shortcut: Escape clears search or closes call stage
+  // Keyboard shortcut: Escape clears search or dismisses incoming call
   $(document).on('keydown', function (e) {
     if (e.key === 'Escape') {
-      if ($('#room-message-search').val()) {
+      if (incomingCallInfo) {
+        rejectIncomingCall();
+      } else if ($('#room-message-search').val()) {
         $('#clear-search-btn').click();
       }
     }
