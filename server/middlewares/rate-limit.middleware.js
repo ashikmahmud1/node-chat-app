@@ -43,6 +43,11 @@ const createHttpRateLimiter = (options = {}) => {
   });
 
   return (req, res, next) => {
+    // If headers have already been sent (e.g. from an aborted static file stream), bypass setting headers
+    if (res.headersSent) {
+      return next();
+    }
+
     const clientKey = req.ip || (req.socket && req.socket.remoteAddress) || 'global';
     const result = limiter.consume(clientKey);
 

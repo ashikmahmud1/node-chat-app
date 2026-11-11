@@ -1,13 +1,20 @@
 const multer = require('multer');
 
 const notFoundHandler = (req, res) => {
+  if (res.headersSent) {
+    return;
+  }
   res.status(404).json({
     error: 'Resource not found',
   });
 };
 
-// eslint-disable-next-line no-unused-vars
 const errorHandler = (err, req, res, next) => {
+  // If headers have already been sent to the client, delegate to the default Express error handler
+  if (res.headersSent) {
+    return next(err);
+  }
+
   if (err instanceof multer.MulterError) {
     return res.status(400).json({
       error: `File upload error: ${err.message}`,

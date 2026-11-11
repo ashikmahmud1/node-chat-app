@@ -44,8 +44,12 @@ module.exports = {
   },
   aws: {
     region: process.env.AWS_REGION || 'us-east-1',
+    endpoint: process.env.AWS_ENDPOINT || process.env.S3_ENDPOINT || '',
+    forcePathStyle:
+      process.env.AWS_FORCE_PATH_STYLE === 'true' ||
+      Boolean(process.env.AWS_ENDPOINT || process.env.S3_ENDPOINT),
     accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-    bucketName: process.env.AWS_S3_BUCKET_NAME || '',
+    bucketName: process.env.AWS_S3_BUCKET_NAME || 'chat-app-uploads',
   },
 };

@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const { randomUUID } = require('crypto');
 const express = require('express');
 const config = require('./config');
@@ -12,6 +14,9 @@ const createApp = (usersInstance = null, sfuServiceInstance = null) => {
 
   // Enterprise security & request correlation headers
   app.use((req, res, next) => {
+    if (res.headersSent) {
+      return next();
+    }
     const requestId = req.headers['x-request-id'] || randomUUID();
     req.requestId = requestId;
     res.setHeader('X-Request-Id', requestId);
@@ -54,6 +59,22 @@ const createApp = (usersInstance = null, sfuServiceInstance = null) => {
   // WebRTC ICE (STUN/TURN) configuration endpoint
   app.get('/api/rtc-config', apiRateLimiter, (req, res) => {
     res.status(200).json({ iceServers: config.webrtc.iceServers });
+  });
+
+  // Provide explicit delivery of Socket.IO client bundle if requested directly
+  app.get(['/socket.io/socket.io.js', '/socket.io/socket.io.min.js'], (req, res) => {
+    res.type('application/javascript');
+    const localLib = path.join(config.paths.public, 'js/libs/socket.io.min.js');
+    if (fs.existsSync(localLib)) {
+      return res.sendFile(localLib);
+    }
+    const nodeModulesLib = path.join(__dirname, '../node_modules/socket.io/client-dist/socket.io.min.js');
+    return res.sendFile(nodeModulesLib);
+  });
+
+  // Favicon handler to prevent 404 console errors
+  app.get('/favicon.ico', (req, res) => {
+    res.status(204).end();
   });
 
   // Register file upload and download routes

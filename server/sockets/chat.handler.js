@@ -18,6 +18,15 @@ const registerChatHandlers = (
     return rateLimiter.consume(socket.id).allowed;
   };
 
+  const broadcastRoomList = () => {
+    const activeRooms = users.getActiveRooms();
+    if (typeof io.emit === 'function') {
+      io.emit('updateRoomList', activeRooms);
+    } else {
+      activeRooms.forEach((room) => io.to(room).emit('updateRoomList', activeRooms));
+    }
+  };
+
   socket.on('join', (params = {}, callback = () => {}) => {
     const respond = typeof callback === 'function' ? callback : () => {};
 
@@ -45,11 +54,68 @@ const registerChatHandlers = (
     }
 
     io.to(canonicalRoom).emit('updateUserList', users.getUserList(canonicalRoom));
+    broadcastRoomList();
     socket.emit('newMessage', generateMessage('Admin', 'Welcome to the chat app'));
     socket.broadcast
       .to(canonicalRoom)
       .emit('newMessage', generateMessage('Admin', `${name} has joined.`));
     return respond();
+  });
+
+  socket.on('room:switch', (params = {}, callback = () => {}) => {
+    const respond = typeof callback === 'function' ? callback : () => {};
+    const currentUser = users.getUser(socket.id);
+    if (!currentUser) {
+      return respond('User session not found.');
+    }
+
+    if (!isRealString(params.room, config.limits.maxRoomLength)) {
+      return respond('Valid group name (1-50 characters) is required.');
+    }
+
+    const targetRoom = users.getCanonicalRoom(params.room);
+    if (targetRoom.toLowerCase() === currentUser.room.toLowerCase()) {
+      return respond(null, { room: currentUser.room });
+    }
+
+    if (users.isNameTaken(currentUser.name, targetRoom, socket.id)) {
+      return respond(
+        `Display name "${currentUser.name}" is already in use in room "${targetRoom}".`
+      );
+    }
+
+    const previousRoom = currentUser.room;
+    if (typeof socket.leave === 'function') {
+      socket.leave(previousRoom);
+    }
+    socket.broadcast.to(previousRoom).emit('typing:update', {
+      userId: socket.id,
+      name: currentUser.name,
+      isTyping: false,
+    });
+
+    socket.join(targetRoom);
+    users.addUser(socket.id, currentUser.name, targetRoom, currentUser.status);
+
+    io.to(previousRoom).emit('updateUserList', users.getUserList(previousRoom));
+    io.to(previousRoom).emit(
+      'newMessage',
+      generateMessage('Admin', `${currentUser.name} has left.`)
+    );
+
+    const history = messageStore ? messageStore.getMessages(targetRoom) : [];
+    if (history.length > 0) {
+      socket.emit('roomHistory', history);
+    }
+
+    io.to(targetRoom).emit('updateUserList', users.getUserList(targetRoom));
+    broadcastRoomList();
+    socket.emit('newMessage', generateMessage('Admin', `Welcome to #${targetRoom}`));
+    socket.broadcast
+      .to(targetRoom)
+      .emit('newMessage', generateMessage('Admin', `${currentUser.name} has joined.`));
+
+    return respond(null, { room: targetRoom });
   });
 
   socket.on('presence:update', (payload = {}, callback = () => {}) => {
@@ -223,6 +289,7 @@ const registerChatHandlers = (
         isTyping: false,
       });
       io.to(user.room).emit('updateUserList', users.getUserList(user.room));
+      broadcastRoomList();
       io.to(user.room).emit('newMessage', generateMessage('Admin', `${user.name} has left.`));
     }
   });

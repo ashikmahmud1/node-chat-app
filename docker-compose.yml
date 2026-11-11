@@ -1,15 +1,45 @@
 services:
+  # SeaweedFS All-in-One Master + Volume + Filer + S3 API Service
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    container_name: seaweedfs-s3
+    restart: unless-stopped
+    command: "server -dir=/data -s3 -s3.port=8333 -s3.allowEmptyFolder=false"
+    ports:
+      - "8333:8333" # S3-compatible API Gateway
+      - "9333:9333" # SeaweedFS Master
+      - "8888:8888" # SeaweedFS Filer
+    volumes:
+      - seaweedfs_data:/data
+    healthcheck:
+      test: ["CMD", "weed", "version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # NexusChat Application Container
   chat-app:
     build: .
     container_name: nexus-chat-sfu
     restart: unless-stopped
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
     ports:
       - "3000:3000"
     environment:
       - NODE_ENV=production
       - PORT=3000
       - LOG_LEVEL=info
-      - STORAGE_TYPE=local
+      - STORAGE_TYPE=s3
+      - S3_ENDPOINT=http://seaweedfs:8333
+      - AWS_ENDPOINT=http://seaweedfs:8333
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=any_access_key
+      - AWS_SECRET_ACCESS_KEY=any_secret_key
+      - AWS_S3_BUCKET_NAME=chat-app-uploads
+      - AWS_FORCE_PATH_STYLE=true
     volumes:
       - ./data:/usr/src/app/data
     healthcheck:
@@ -17,3 +47,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  seaweedfs_data:

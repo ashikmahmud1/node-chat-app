@@ -4,7 +4,7 @@ const { expect } = require('expect');
 const config = require('../server/config');
 const { uploadFile, downloadFile } = require('../server/controllers/file.controller');
 const { fileFilter } = require('../server/middlewares/file-upload');
-const { SlidingWindowRateLimiter } = require('../server/middlewares/rate-limit.middleware');
+const { SlidingWindowRateLimiter, createHttpRateLimiter } = require('../server/middlewares/rate-limit.middleware');
 const { notFoundHandler, errorHandler } = require('../server/middlewares/error.middleware');
 const { registerChatHandlers } = require('../server/sockets/chat.handler');
 const { registerPrivateHandlers } = require('../server/sockets/private.handler');
@@ -202,6 +202,43 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
       expect(res500.statusCode).toBe(500);
       expect(res500.body).toEqual({ error: 'Custom error' });
     });
+
+    it('errorHandler should delegate to next(err) when headersSent is true to prevent ERR_HTTP_HEADERS_SENT', () => {
+      const res = createMockRes();
+      res.headersSent = true;
+      let nextCalledWith = null;
+      const testErr = new Error('Stream error after headers');
+
+      errorHandler(testErr, {}, res, (err) => {
+        nextCalledWith = err;
+      });
+
+      expect(nextCalledWith).toBe(testErr);
+      expect(res.body).toBeNull();
+    });
+
+    it('createHttpRateLimiter should bypass setting headers when headersSent is true to prevent ERR_HTTP_HEADERS_SENT', () => {
+      const limiterMiddleware = createHttpRateLimiter();
+      const res = createMockRes();
+      res.headersSent = true;
+      let nextCalled = false;
+
+      limiterMiddleware({}, res, () => {
+        nextCalled = true;
+      });
+
+      expect(nextCalled).toBe(true);
+      expect(res.headers['X-RateLimit-Limit']).toBeUndefined();
+    });
+
+    it('notFoundHandler should return early when headersSent is true to prevent ERR_HTTP_HEADERS_SENT', () => {
+      const res = createMockRes();
+      res.headersSent = true;
+
+      notFoundHandler({}, res);
+
+      expect(res.body).toBeNull();
+    });
   });
 
   describe('Socket.IO Chat, Room History, Edit/Delete/Reactions, Presence & Call Handlers', () => {
@@ -304,6 +341,38 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
       socketA.directEmits.length = 0;
       socketA.trigger('initializeAudioCall', 'socket-b');
       expect(socketA.directEmits.some((e) => e.event === 'userBusy')).toBe(true);
+    });
+
+    it('should support live group switching via room:switch and broadcast updateRoomList', () => {
+      const { createSocket, emitted, users, messageStore } = createMockSocketEnv();
+      const socketA = createSocket('socket-a');
+
+      socketA.trigger('join', { name: 'Ashik', room: 'Engineering' }, () => {});
+      expect(users.getUser('socket-a').room).toBe('Engineering');
+      expect(
+        emitted.some(
+          (e) =>
+            e.event === 'updateRoomList' &&
+            Array.isArray(e.data) &&
+            e.data.includes('Engineering')
+        )
+      ).toBe(true);
+
+      messageStore.addMessage('Design', { id: 'design-1', from: 'Jen', text: 'Design spec' });
+
+      let switchRes = null;
+      socketA.trigger('room:switch', { room: 'Design' }, (err, res) => {
+        expect(err).toBeNull();
+        switchRes = res;
+      });
+
+      expect(switchRes).toEqual({ room: 'Design' });
+      expect(users.getUser('socket-a').room).toBe('Design');
+      expect(
+        socketA.directEmits.some(
+          (e) => e.event === 'roomHistory' && e.data.some((m) => m.text === 'Design spec')
+        )
+      ).toBe(true);
     });
 
     it('should persist and reload MessageStore snapshots on disk', () => {
