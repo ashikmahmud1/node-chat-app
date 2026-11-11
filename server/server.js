@@ -1,3 +1,5 @@
+require('./utils/check-node-version');
+
 const http = require('node:http');
 const config = require('./config');
 const { createApp } = require('./app');

@@ -1,3 +1,5 @@
+require('../server/utils/check-node-version');
+
 const fs = require('node:fs');
 const { MessageStore } = require('../server/utils/message-store');
 const { generateLocationMessage, roomChannel, validCoordinates } = require('../server/utils/message');

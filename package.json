@@ -4,10 +4,14 @@
   "description": "Real-time text, file, location, audio, and video chat application built with Node.js, Express, and Socket.IO",
   "main": "server/server.js",
   "scripts": {
+    "prestart": "node server/utils/check-node-version.js",
     "start": "node --env-file-if-exists=.env server/server.js",
+    "predev": "node server/utils/check-node-version.js",
     "dev": "nodemon --exec \"node --env-file-if-exists=.env\" server/server.js",
+    "pretest": "node server/utils/check-node-version.js",
     "test": "mocha 'tests/**/*.test.js'",
     "test-watch": "nodemon --exec 'npm test'",
+    "preimport:history": "node server/utils/check-node-version.js",
     "import:history": "node --env-file-if-exists=.env scripts/import-history.js"
   },
   "engines": {

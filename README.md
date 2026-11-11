@@ -4,15 +4,15 @@ A single-instance guest chat application with public groups, direct messages, fi
 
 ## Run locally
 
-Use Node.js 24 and open [localhost:3000](http://localhost:3000).
+NexusChat requires Node.js 24 for its built-in SQLite database. With [nvm](https://github.com/nvm-sh/nvm#nvmrc), run `nvm install` from the project directory to install and select the version in `.nvmrc`. In a new terminal, run `nvm use` before starting the app. If your editor starts the app, select Node.js 24 as its runtime too.
 
 ```sh
+node --version
 npm ci
 npm start
-npm test
 ```
 
-`npm run dev` watches the server for changes. Copy `.env.example` to `.env` to override configuration. By default, SQLite and attachment files are stored under `data/`.
+Open [localhost:3000](http://localhost:3000). Use `npm run dev` to watch the server for changes or `npm test` to run the tests. Copy `.env.example` to `.env` to override configuration. By default, SQLite and attachment files are stored under `data/`.
 
 ### Docker Compose with SeaweedFS
 
