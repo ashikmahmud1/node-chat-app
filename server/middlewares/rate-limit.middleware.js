@@ -1,6 +1,6 @@
 const config = require('../config');
 
-class SlidingWindowRateLimiter {
+class FixedWindowRateLimiter {
   constructor({ windowMs = 60000, max = 100 } = {}) {
     this.windowMs = windowMs;
     this.max = max;
@@ -34,8 +34,8 @@ class SlidingWindowRateLimiter {
       };
     }
 
-    record.count += 1;
-    const allowed = record.count <= this.max;
+    const allowed = record.count < this.max;
+    if (allowed) record.count += 1;
     return {
       allowed,
       remaining: Math.max(0, this.max - record.count),
@@ -49,7 +49,7 @@ class SlidingWindowRateLimiter {
 }
 
 const createHttpRateLimiter = (options = {}) => {
-  const limiter = new SlidingWindowRateLimiter({
+  const limiter = new FixedWindowRateLimiter({
     windowMs: options.windowMs || config.limits.httpRateLimitWindowMs,
     max: options.max || config.limits.httpRateLimitMax,
   });
@@ -67,6 +67,7 @@ const createHttpRateLimiter = (options = {}) => {
     res.setHeader('X-RateLimit-Remaining', String(result.remaining));
 
     if (!result.allowed) {
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil((result.resetAt - Date.now()) / 1000))));
       return res.status(429).json({
         error: 'Too many requests. Please slow down and try again shortly.',
       });
@@ -77,6 +78,6 @@ const createHttpRateLimiter = (options = {}) => {
 };
 
 module.exports = {
-  SlidingWindowRateLimiter,
+  FixedWindowRateLimiter,
   createHttpRateLimiter,
 };

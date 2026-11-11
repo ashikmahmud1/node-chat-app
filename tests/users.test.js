@@ -32,6 +32,7 @@ describe('Users State Manager', () => {
     const customUsers = new Users();
     const user = {
       id: '123',
+      guestId: '123',
       name: 'Andrew',
       room: 'The Office Fans',
       status: 'online',

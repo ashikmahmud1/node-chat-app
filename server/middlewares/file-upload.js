@@ -1,57 +1,28 @@
-const fs = require('fs');
-const path = require('path');
+const path = require('node:path');
 const multer = require('multer');
 const config = require('../config');
 
-const BLOCKED_EXTENSIONS = new Set([
-  '.exe',
-  '.bat',
-  '.cmd',
-  '.sh',
-  '.php',
-  '.jsp',
-  '.asp',
-  '.aspx',
-  '.dll',
-  '.msi',
-  '.vbs',
-  '.scr',
-  '.com',
+const executableExtensions = new Set([
+  '.exe', '.bat', '.cmd', '.sh', '.php', '.jsp', '.asp', '.aspx', '.dll', '.msi', '.vbs', '.scr', '.com',
 ]);
 
-// Ensure upload directory exists
-if (!fs.existsSync(config.paths.uploads)) {
-  fs.mkdirSync(config.paths.uploads, { recursive: true });
-}
-
-const fileFilter = (req, file, cb) => {
-  const ext = path.extname(file.originalname || '').toLowerCase();
-  if (BLOCKED_EXTENSIONS.has(ext)) {
-    const err = new Error(`File type "${ext}" is not permitted for security reasons.`);
-    err.status = 400;
-    return cb(err, false);
-  }
-  return cb(null, true);
+const uploadOptions = {
+  defParamCharset: 'utf8',
+  fileFilter(req, file, callback) {
+    if (executableExtensions.has(path.extname(file.originalname.trim()).toLowerCase())) {
+      return callback(Object.assign(new Error('Executable and script files are not supported.'), { status: 415 }));
+    }
+    return callback(null, true);
+  },
+  limits: { fileSize: config.limits.maxFileSize, files: 1, fields: 0, parts: 2 },
 };
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, config.paths.uploads);
-  },
-  filename: (req, file, cb) => {
-    const safeOriginalName = path
-      .basename(file.originalname)
-      .replace(/[^a-zA-Z0-9._-]/g, '_');
-    cb(null, `${Date.now()}-${safeOriginalName}`);
-  },
-});
-
 const upload = multer({
-  storage,
-  fileFilter,
-  limits: {
-    fileSize: config.limits.maxFileSize,
-  },
+  ...uploadOptions,
+  storage: multer.diskStorage({
+    destination: (req, file, callback) => callback(null, config.paths.uploads),
+    filename: (req, file, callback) => callback(null, req.attachmentId),
+  }),
 });
 
-module.exports = { upload, fileFilter, BLOCKED_EXTENSIONS };
+module.exports = { upload, uploadOptions };

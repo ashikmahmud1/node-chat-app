@@ -1,0 +1,16 @@
+{
+	auto_https disable_redirects
+	servers {
+		protocols h1 h2
+	}
+}
+
+https://{$STAGING_HOST} {
+	tls /etc/nexus/tls/fullchain.pem /etc/nexus/tls/privkey.pem
+	basic_auth {
+		{$STAGING_USER} {$STAGING_PASSWORD_HASH}
+	}
+	reverse_proxy chat-app:3000 {
+		header_up -Authorization
+	}
+}

@@ -1,35 +1,67 @@
 const { Server } = require('socket.io');
 const config = require('../config');
-const { Users } = require('../utils/users');
-const { MessageStore } = require('../utils/message-store');
-const { SlidingWindowRateLimiter } = require('../middlewares/rate-limit.middleware');
+const { FixedWindowRateLimiter } = require('../middlewares/rate-limit.middleware');
 const { SfuService } = require('../services/sfu.service');
+const { CallsService } = require('../services/calls.service');
+const { hasAllowedOrigin } = require('../services/guest-session');
+const { createEventRegistrar } = require('./events');
 const { registerChatHandlers } = require('./chat.handler');
 const { registerPrivateHandlers } = require('./private.handler');
 const { registerCallHandlers } = require('./call.handler');
 const { registerSfuHandlers } = require('./sfu.handler');
+const { logger } = require('../utils/logger');
 
-const initializeSocket = (httpServer, options = {}, existingUsers = null, existingMessageStore = null) => {
-  const io = new Server(httpServer, {
-    maxHttpBufferSize: 1e7, // 10 MB buffer
-    ...options,
+function initializeSocket(users, messageStore, guestSession) {
+  const handshakeLimiter = new FixedWindowRateLimiter({ windowMs: 10000, max: 120 });
+  const io = new Server({
+    maxHttpBufferSize: 128 * 1024,
+    allowRequest: (request, callback) => callback(null, hasAllowedOrigin(request) &&
+      Boolean(guestSession.read(request)) && handshakeLimiter.consume(request.socket.remoteAddress).allowed),
   });
-  const users = existingUsers || new Users();
-  const messageStore = existingMessageStore || new MessageStore();
-  const sfuService = new SfuService(io, users);
-  const socketRateLimiter = new SlidingWindowRateLimiter({
+  const sfuService = new SfuService(io);
+  const calls = new CallsService(io, users, sfuService, messageStore);
+  sfuService.onPeerConnected = (id) => calls.mediaReady(id);
+  sfuService.onPeerFailed = (id, sessionId) => {
+    if (sessionId.startsWith('private:')) calls.finish(id, sessionId.slice(8), 'failed');
+  };
+
+  const socketRateLimiter = new FixedWindowRateLimiter({
     windowMs: config.limits.socketRateLimitWindowMs,
     max: config.limits.socketRateLimitMax,
   });
+  const signalingLimiter = new FixedWindowRateLimiter({ windowMs: 10000, max: 80 });
 
-  io.on('connection', (socket) => {
-    registerChatHandlers(io, socket, users, messageStore, socketRateLimiter);
-    registerPrivateHandlers(io, socket, users, socketRateLimiter);
-    registerCallHandlers(io, socket, users);
-    registerSfuHandlers(io, socket, users, sfuService);
+  io.use((socket, next) => {
+    const guestId = guestSession.read(socket.request);
+    if (io.of('/').sockets.size >= config.limits.maxConnections) return next(new Error('Chat is full. Try again shortly.'));
+    if (!guestId) return next(new Error('Open the join page to start a guest session.'));
+    socket.data.guestId = guestId;
+    return next();
   });
 
-  return { io, users, messageStore, sfuService, socketRateLimiter };
-};
+  io.on('connection', (socket) => {
+    const leaveCalls = () => {
+      calls.finish(socket.id, null, 'left');
+      sfuService.leaveAllSessions(socket.id).catch((error) =>
+        logger.warn('Could not leave media session', { error: error.name })
+      );
+    };
+    const context = {
+      io, socket, users, messageStore, sfuService, calls, leaveCalls, signalingLimiter,
+      on: createEventRegistrar(socket, socketRateLimiter),
+    };
+    socket.on('disconnecting', leaveCalls);
+    socket.on('disconnect', () => {
+      socketRateLimiter.remove(socket.id);
+      signalingLimiter.remove(socket.id);
+    });
+    registerChatHandlers(context);
+    registerPrivateHandlers(context);
+    registerCallHandlers(context);
+    registerSfuHandlers(context);
+  });
+
+  return { io, sfuService };
+}
 
 module.exports = { initializeSocket };

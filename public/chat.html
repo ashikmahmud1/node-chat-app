@@ -3,19 +3,16 @@
 
 <head>
     <meta charset="utf-8">
-    <title>NexusChat | Enterprise Real-Time Chat &amp; Conferencing</title>
+    <title>NexusChat | Chat</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💬</text></svg>">
-    <!-- Bootstrap 5.3.8 CSS & Font Awesome 7.3.1 -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.3.1/css/all.min.css">
+    <link rel="stylesheet" href="/assets/icons/css/all.min.css">
     <link rel="stylesheet" href="/css/styles.css">
-    <link rel="stylesheet" href="/css/animate.css" type="text/css" />
 </head>
 
 <body class="chat">
-<audio id="message-received" preload="auto"></audio>
-<audio id="audioCalling" preload="auto" autoplay></audio>
+<audio id="message-received" src="/sound/iphone_notification.mp3" preload="auto"></audio>
+
 
 <!-- Left Sidebar: 50% Top (Groups) & 50% Bottom (Personal Chat) -->
 <aside class="chat__sidebar" id="chat__sidebar">
@@ -27,7 +24,7 @@
             <h2>NexusChat</h2>
             <div class="connection-status-pill">
                 <span class="status-pulse-dot"></span>
-                <span id="connection-status-text">Connected</span>
+                <span id="connection-status-text" role="status">Connecting…</span>
             </div>
             <span id="sidebar-room-name" style="display: none;"># General</span>
         </div>
@@ -36,11 +33,11 @@
     <!-- User Identity & Presence Box -->
     <div class="sidebar-user-card">
         <div class="sidebar-user-avatar-wrap">
-            <div class="user-avatar-badge" id="current-user-avatar">ME</div>
+            <div class="user-avatar-badge" id="current-user-avatar"></div>
             <span class="user-avatar-status-dot status-online" id="current-user-status-dot"></span>
         </div>
         <div class="sidebar-user-meta">
-            <span class="sidebar-user-name" id="current-user-name">Me</span>
+            <span class="sidebar-user-name" id="current-user-name"></span>
             <select id="presence-status-select" class="presence-select" aria-label="Presence Status">
                 <option value="online">● Online</option>
                 <option value="away">● Away</option>
@@ -57,9 +54,9 @@
                 <h3><i class="fa-solid fa-layer-group" aria-hidden="true"></i> Groups</h3>
                 <span class="online-count-badge group-count-badge" id="groups-count">1</span>
             </div>
-            <form id="quick-group-form" class="sidebar-quick-group-form" action="javascript:void(0);" onsubmit="event.preventDefault(); return false;" autocomplete="off">
-                <input type="text" id="quick-group-input" maxlength="50" placeholder="Filter or join group..." />
-                <button type="button" id="quick-group-btn" title="Create or Join Group">
+            <form id="quick-group-form" class="sidebar-quick-group-form" autocomplete="off">
+                <input type="text" id="quick-group-input" aria-label="Filter or join group" maxlength="50" placeholder="Filter or join group..." />
+                <button type="submit" id="quick-group-btn" title="Create or Join Group">
                     <i class="fa-solid fa-plus" aria-hidden="true"></i>
                 </button>
             </form>
@@ -78,7 +75,7 @@
 
     <div class="sidebar-footer">
         <a href="/" class="leave-room-btn">
-            <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i> Switch Workspace
+            <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i> Leave group
         </a>
     </div>
 </aside>
@@ -87,7 +84,7 @@
 <main class="chat__main" id="chat__main">
     <header class="chat__header">
         <div class="chat__header-left">
-            <button type="button" id="show-people" class="mobile-sidebar-btn" title="Toggle Sidebar">
+            <button type="button" id="show-people" aria-controls="chat__sidebar" aria-expanded="false" class="mobile-sidebar-btn" title="Toggle Sidebar">
                 <i class="fa-solid fa-bars" aria-hidden="true" id="change-arrow"></i>
             </button>
             <div class="room-header-meta">
@@ -97,29 +94,31 @@
                 </span>
                 <div class="header-title-stack">
                     <div class="header-title-row">
-                        <h4 id="header-room-title"># General</h4>
+                        <h4 id="header-room-title">Joining group…</h4>
                         <span class="room-status-dot" id="header-status-dot"></span>
                         <span id="room-call-active-badge" class="room-call-badge hide-element">
                             <i class="fa-solid fa-podcast" aria-hidden="true"></i> <span id="room-call-count">0</span> in Call
                         </span>
                     </div>
-                    <span id="header-chat-subtitle" class="header-chat-subtitle">Group Channel · WebRTC SFU Enabled</span>
+                    <span id="header-chat-subtitle" class="header-chat-subtitle">Group chat</span>
                 </div>
-                <button type="button" id="back-to-group-btn" class="btn-back-to-group hide-element" title="Return to Group Chat">
+                <button type="button" id="back-to-group-btn" aria-label="Back to group" class="btn-back-to-group hide-element" title="Return to Group Chat">
                     <i class="fa-solid fa-arrow-left" aria-hidden="true"></i> <span id="back-to-group-label">Back to Group</span>
                 </button>
             </div>
         </div>
 
+            <div class="header-search-wrap" id="header-search">
+            <i class="fa-solid fa-magnifying-glass header-search-icon" aria-hidden="true"></i>
+            <input type="search" id="room-message-search" class="header-search-input" aria-label="Search messages" placeholder="Search messages…" autocomplete="off" />
+            <button type="button" id="clear-search-btn" class="clear-search-btn hide-element" aria-label="Clear search">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
         <div class="chat__header-actions">
-            <div class="header-search-wrap">
-                <i class="fa-solid fa-magnifying-glass header-search-icon" aria-hidden="true"></i>
-                <input type="search" id="room-message-search" class="header-search-input" placeholder="Search messages..." autocomplete="off" />
-                <button type="button" id="clear-search-btn" class="clear-search-btn hide-element" title="Clear Search">
-                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-                </button>
-            </div>
-
+            <button type="button" id="toggle-search-btn" class="mobile-search-btn" aria-label="Search messages" aria-controls="header-search" aria-expanded="false">
+                <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+            </button>
             <!-- Group Chat Call Controls -->
             <div id="group-header-call-actions" class="header-call-btn-group">
                 <button type="button" id="join-room-audio-btn" class="btn-header-call btn-header-audio" title="Start or Join Room Audio Call">
@@ -143,19 +142,22 @@
     </header>
 
     <!-- Global In-App Alert / Notification Banner -->
-    <div class="alert alert-success animated slideInDown text-center alert-display alert-hide" id="alert-box">
-        <i class="fa-solid fa-bell" aria-hidden="true"></i> <span class="alert-text"></span>
+    <div class="alert-display alert-hide" id="alert-box">
+        <p class="alert-text" role="alert"></p>
+        <button type="button" id="dismiss-alert" aria-label="Dismiss notification">
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
     </div>
 
-    <!-- Floating Incoming Call Notification Card (Enterprise Discord/Slack Caliber) -->
-    <div id="incoming-call-card" class="incoming-call-card hide-element" role="dialog" aria-modal="true" aria-label="Incoming Call">
+    <!-- Incoming call -->
+    <div id="incoming-call-card" class="incoming-call-card hide-element" role="region" aria-label="Incoming call">
         <div class="incoming-call-card__avatar-wrap">
             <div id="incoming-caller-avatar" class="user-avatar-badge user-avatar-badge--calling">??</div>
             <span class="incoming-call-ping"></span>
         </div>
         <div class="incoming-call-card__meta">
             <h4 id="incoming-caller-name">Caller</h4>
-            <span id="incoming-call-label" class="incoming-call-subtitle"><i class="fa-solid fa-phone fa-shake"></i> Incoming Call...</span>
+            <span id="incoming-call-label" role="status" class="incoming-call-subtitle"><i class="fa-solid fa-phone fa-shake"></i> Incoming Call...</span>
         </div>
         <div class="incoming-call-card__controls">
             <button type="button" id="accept-call" class="btn-call-action btn-call-accept" title="Accept Call">
@@ -171,8 +173,7 @@
     <section id="room-call-stage" class="room-call-stage hide-element">
         <div class="room-call-stage__header">
             <div class="room-call-stage__title">
-                <span class="live-indicator">LIVE SFU</span>
-                <span id="room-call-mode-label">Room Conference</span>
+                <span id="room-call-mode-label">Group call</span>
                 <span id="room-call-timer" class="call-timer-pill">00:00</span>
             </div>
             <div class="room-call-stage__controls">
@@ -197,11 +198,13 @@
     <section id="personal-call-stage" class="personal-call-stage hide-element">
         <div class="personal-call-header">
             <div class="personal-call-header__info">
-                <span class="live-indicator">LIVE 1:1</span>
                 <span id="personal-call-title">1-to-1 Call</span>
                 <span id="personal-call-timer" class="call-timer-pill">00:00</span>
             </div>
             <div class="personal-call-header__controls">
+                <button type="button" id="personal-play-media" class="sfu-ctrl-btn" hidden>
+                    <i class="fa-solid fa-play" aria-hidden="true"></i> Play media
+                </button>
                 <button type="button" id="personal-toggle-mic" class="sfu-ctrl-btn" title="Mute / Unmute Microphone">
                     <i class="fa-solid fa-microphone" aria-hidden="true"></i>
                 </button>
@@ -213,6 +216,7 @@
                 </button>
             </div>
         </div>
+        <audio id="audioCalling" autoplay></audio>
         <div class="private-video-stage hide-element" id="private-video-stage">
             <div class="private-video-main">
                 <video id="other-video" autoplay playsinline></video>
@@ -234,18 +238,18 @@
             <h3 id="group-empty-title">Welcome to the channel!</h3>
             <p id="group-empty-desc">This is the start of your team conversation. Share updates, files, or start audio and video calls.</p>
         </div>
-        <ol id="messages" class="chat__messages"></ol>
+        <ol id="messages" class="chat__messages" role="log" aria-label="Group messages"></ol>
         <div id="room-typing-indicator" class="typing-indicator hide-element"></div>
-        <div class="progress progress-hide" id="upload-progress-bar">
-            <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" id="upload-progress-bar-inner"
-                 aria-valuenow="10" aria-valuemin="0" aria-valuemax="100">
+        <div class="progress hide-element" id="upload-progress-bar">
+            <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-label="File upload" id="upload-progress-bar-inner"
+                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
                 0%
             </div>
         </div>
         <div class="chat__footer">
-            <form id="message-form" action="javascript:void(0);" onsubmit="event.preventDefault(); return false;">
-                <input name="message" id="message-input" type="text" placeholder="Message group..." autofocus autocomplete="off"/>
-                <button type="button" id="group-send-btn" class="btn-composer-send" title="Send Message">
+            <form id="message-form">
+                <input name="message" id="message-input" aria-label="Group message" maxlength="2000" type="text" placeholder="Message group..." autofocus autocomplete="off"/>
+                <button type="submit" id="group-send-btn" class="btn-composer-send" title="Send Message">
                     <i class="fa-solid fa-paper-plane" aria-hidden="true"></i>
                 </button>
             </form>
@@ -266,20 +270,20 @@
         <div id="personal-empty-state" class="empty-canvas-hero hide-element">
             <div class="empty-hero-icon empty-hero-icon--user"><i class="fa-solid fa-user" aria-hidden="true"></i></div>
             <h3 id="personal-empty-title">Direct Conversation</h3>
-            <p id="personal-empty-desc">Messages sent here are 1-to-1 and end-to-end between you and this person.</p>
+            <p id="personal-empty-desc">Only you and this guest can view this conversation.</p>
         </div>
-        <ol id="private_messages_list" class="chat__messages"></ol>
+        <ol id="private_messages_list" class="chat__messages" role="log" aria-label="Direct messages"></ol>
         <div id="private-typing-indicator" class="typing-indicator hide-element"></div>
-        <div class="progress private-progress-hide" id="private-upload-progress-bar">
-            <div class="progress-bar progress-bar-striped progress-bar-animated" id="private-upload-progress-bar-inner" role="progressbar"
-                 aria-valuenow="10" aria-valuemin="0" aria-valuemax="100">
+        <div class="progress hide-element" id="private-upload-progress-bar">
+            <div class="progress-bar progress-bar-striped progress-bar-animated" id="private-upload-progress-bar-inner" role="progressbar" aria-label="File upload"
+                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
                 0%
             </div>
         </div>
         <div class="chat__footer">
-            <form id="private-message-form" action="javascript:void(0);" onsubmit="event.preventDefault(); return false;">
-                <input name="private-message" id="private-message-input" type="text" placeholder="Message personally..." autocomplete="off"/>
-                <button type="button" id="private-send-btn" class="btn-composer-send private-message-send" title="Send Message">
+            <form id="private-message-form">
+                <input name="private-message" id="private-message-input" aria-label="Direct message" maxlength="2000" type="text" placeholder="Message personally..." autocomplete="off"/>
+                <button type="submit" id="private-send-btn" class="btn-composer-send private-message-send" title="Send Message">
                     <i class="fa-solid fa-paper-plane" aria-hidden="true"></i>
                 </button>
             </form>
@@ -294,6 +298,18 @@
             </div>
         </div>
     </div>
+    <dialog id="message-dialog" aria-labelledby="message-dialog-title">
+        <form id="message-dialog-form">
+            <h3 id="message-dialog-title"></h3>
+            <label id="message-edit-label" for="message-edit-input">Message</label>
+            <textarea id="message-edit-input" maxlength="2000" rows="4"></textarea>
+            <p id="message-dialog-status" class="join-status" role="alert"></p>
+            <div class="dialog-actions">
+                <button type="button" id="message-dialog-cancel">Cancel</button>
+                <button type="submit" id="message-dialog-submit">Save changes</button>
+            </div>
+        </form>
+    </dialog>
 </main>
 
 <!-- Message Templates -->
@@ -365,7 +381,7 @@
                     </div>
                     <div class="message-card-info">
                         <span class="message-card-title">{{filename}}</span>
-                        <a href="/data/{{url}}" download="{{filename}}" target="_blank" rel="noopener noreferrer" class="message-card-link">
+                        <a href="{{url}}" download="{{filename}}" class="message-card-link">
                             <i class="fa-solid fa-download" aria-hidden="true"></i> Download File
                         </a>
                     </div>
@@ -398,30 +414,10 @@
     </li>
 </script>
 
-<!-- Local & Fallback Script Dependencies -->
-<script src="/js/libs/socket.io.min.js"></script>
-<script>
-    if (typeof io === 'undefined') {
-        document.write('<script src="/socket.io/socket.io.js"><\/script>');
-    }
-</script>
-<script>
-    if (typeof io === 'undefined') {
-        document.write('<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"><\/script>');
-    }
-</script>
-<script src="/js/libs/jquery-4.0.0.min.js"></script>
-<script>
-    if (!window.jQuery) {
-        document.write('<script src="https://code.jquery.com/jquery-4.0.0.min.js"><\/script>');
-    }
-</script>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
-<script src="/js/libs/moment.js"></script>
-<script src="/js/libs/mustache.min.js"></script>
-<script src="/js/libs/deparam.js"></script>
+<script src="/socket.io/socket.io.min.js"></script>
+<script src="/assets/jquery.min.js"></script>
+<script src="/assets/mustache.min.js"></script>
+<script src="/js/sfu.js"></script>
 <script src="/js/chat.js"></script>
-
 </body>
-
 </html>

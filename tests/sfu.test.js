@@ -1,250 +1,124 @@
-const { expect } = require('expect');
-const { Users } = require('../server/utils/users');
+const assert = require('node:assert/strict');
 const { SfuService } = require('../server/services/sfu.service');
-const { registerSfuHandlers } = require('../server/sockets/sfu.handler');
 
 class MockEvent {
-  constructor() {
-    this.listeners = [];
+  listeners = new Set();
+
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return { unSubscribe: () => this.listeners.delete(listener) };
   }
 
-  subscribe(fn) {
-    this.listeners.push(fn);
-    return {
-      unSubscribe: () => {
-        this.listeners = this.listeners.filter((l) => l !== fn);
-      },
-    };
-  }
-
-  execute(...args) {
-    this.listeners.forEach((fn) => fn(...args));
+  emit(value) {
+    for (const listener of this.listeners) listener(value);
   }
 }
 
-class MockPeerConnection {
-  constructor() {
-    this.onIceCandidate = new MockEvent();
-    this.onTrack = new MockEvent();
-    this.localDescription = null;
-    this.remoteDescription = null;
-    this.addedTracks = [];
-    this.removedSenders = [];
-    this.candidates = [];
-    this.closed = false;
-    this.offerCounter = 0;
+const bundledDescription = [
+  'v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0',
+  'a=group:BUNDLE 0 1', 'm=audio 5000 UDP/TLS/RTP/SAVPF 111',
+  'c=IN IP4 192.0.2.10', 'a=mid:0', 'a=rtpmap:111 opus/48000/2',
+  'a=candidate:1 1 udp 2130706431 192.0.2.10 5000 typ host',
+  'm=video 9 UDP/TLS/RTP/SAVPF 96', 'a=mid:1', 'a=rtpmap:96 VP8/90000', '',
+].join('\r\n');
+
+class MockPeer {
+  connectionStateChange = new MockEvent();
+  onTrack = new MockEvent();
+  offers = 0;
+  senders = [];
+
+  async setRemoteDescription(description) {
+    if (description.sdp === 'fail') throw new Error('Bad offer');
+    this.remote = description;
   }
 
-  async setRemoteDescription(desc) {
-    this.remoteDescription = desc;
-  }
-
-  async createAnswer() {
-    return { type: 'answer', sdp: 'v=0\r\na=mock-answer\r\n' };
-  }
-
+  async setLocalDescription(description) { this.localDescription = description; }
+  async createAnswer() { return { type: 'answer', sdp: bundledDescription }; }
   async createOffer() {
-    this.offerCounter += 1;
-    return { type: 'offer', sdp: `v=0\r\na=mock-sfu-offer-${this.offerCounter}\r\n` };
+    this.offers += 1;
+    return { type: 'offer', sdp: bundledDescription };
+  }
+  async close() { this.closed = true; }
+  getReceivers() { return []; }
+
+  addTransceiver(track) {
+    const sender = { track, onPictureLossIndication: new MockEvent() };
+    this.senders.push(sender);
+    return { sender, stop: () => { this.senders = this.senders.filter((item) => item !== sender); } };
   }
 
-  async setLocalDescription(desc) {
-    this.localDescription = desc;
-  }
-
-  async addIceCandidate(candidate) {
-    this.candidates.push(candidate);
-  }
-
-  addTrack(track, stream) {
-    const sender = { track, stream };
-    this.addedTracks.push(sender);
-    return sender;
-  }
-
-  removeTrack(sender) {
-    this.removedSenders.push(sender);
-  }
-
-  async close() {
-    this.closed = true;
-  }
-
-  simulateIncomingTrack(kind = 'video') {
-    const fakeRemoteTrack = {
-      kind,
-      onReceiveRtp: new MockEvent(),
-    };
-    this.onTrack.execute(fakeRemoteTrack);
-    return fakeRemoteTrack;
+  publish(kind) {
+    const track = { kind, onReceiveRtp: new MockEvent() };
+    this.onTrack.emit(track);
+    return track;
   }
 }
 
-describe('WebRTC SFU Service & Socket Handlers (1-to-1 & Multi-User Room Calls)', () => {
-  let users;
+describe('SFU negotiation and cleanup', () => {
+  const sessionId = 'room:chat:engineering';
+  let service;
   let emitted;
-  let io;
-  let sfuService;
-
-  const createSocket = (id, name, room) => {
-    users.addUser(id, name, room);
-    const handlers = {};
-    const socket = {
-      id,
-      on(event, fn) {
-        handlers[event] = fn;
-      },
-      trigger(event, ...args) {
-        if (handlers[event]) {
-          return handlers[event](...args);
-        }
-        return undefined;
-      },
-    };
-    registerSfuHandlers(io, socket, users, sfuService);
-    return socket;
-  };
 
   beforeEach(() => {
-    users = new Users();
     emitted = [];
-    io = {
-      to(target) {
-        return {
-          emit(event, data) {
-            emitted.push({ target, event, data });
-          },
-        };
-      },
-    };
-    sfuService = new SfuService(io, users, MockPeerConnection);
+    service = new SfuService({
+      to: (target) => ({ emit: (event, data) => emitted.push({ target, event, data }) }),
+    }, MockPeer);
   });
 
-  it('should allow multiple users to join a room SFU session and forward RTP tracks across participants', async () => {
-    const socketA = createSocket('user-a', 'Ashik', 'Engineering');
-    const socketB = createSocket('user-b', 'Jen', 'Engineering');
-    const sessionId = 'room:Engineering';
+  afterEach(() => service.closeAllSessions());
 
-    // User A joins room SFU call
-    const joinResA = await new Promise((resolve) => {
-      socketA.trigger(
-        'sfu:join',
-        {
-          sessionId,
-          mode: 'video',
-          sdp: { type: 'offer', sdp: 'v=0\r\na=offer-a\r\n' },
-        },
-        resolve
-      );
+  async function join(id, sdp = 'offer') {
+    const { sdp: answer } = await service.joinSession({
+      sessionId, socket: { id }, mode: 'video', sdp: { type: 'offer', sdp },
+      user: { name: id, room: 'Engineering' },
     });
+    assert.match(answer.sdp, /s=-\r\nc=IN IP4 0\.0\.0\.0\r\nt=0 0/);
+    assert.match(answer.sdp, /m=audio[^\r]*\r\nc=IN IP4 192\.0\.2\.10/);
+    return service.sessions.get(sessionId).get(id);
+  }
 
-    expect(joinResA.ok).toBe(true);
-    expect(joinResA.sdp.type).toBe('answer');
-    expect(joinResA.participants.length).toBe(1);
-
-    // User A publishes a video track
-    const session = sfuService.sessions.get(sessionId);
-    const peerA = session.get('user-a');
-    const remoteTrackA = peerA.pc.simulateIncomingTrack('video');
-
-    // User B joins the same room SFU call
-    const joinResB = await new Promise((resolve) => {
-      socketB.trigger(
-        'sfu:join',
-        {
-          sessionId,
-          mode: 'video',
-          sdp: { type: 'offer', sdp: 'v=0\r\na=offer-b\r\n' },
-        },
-        resolve
-      );
-    });
-
-    expect(joinResB.ok).toBe(true);
-    expect(joinResB.participants.length).toBe(2);
-
-    // Wait for renegotiation promise chain
-    const peerB = session.get('user-b');
-    await peerB.negotiationChain;
-
-    // Verify User A's published video track was attached and renegotiated to User B
-    expect(peerB.pc.addedTracks.length).toBe(1);
-    expect(peerB.pc.addedTracks[0].track.kind).toBe('video');
-    expect(emitted.some((e) => e.target === 'user-b' && e.event === 'sfu:offer')).toBe(true);
-
-    // Verify User B can send an answer and ICE candidate to the SFU
-    await socketB.trigger('sfu:answer', {
-      sessionId,
-      sdp: { type: 'answer', sdp: 'v=0\r\na=answer-b\r\n' },
-    });
-    expect(peerB.pc.remoteDescription.sdp).toContain('answer-b');
-
-    await socketB.trigger('sfu:candidate', {
-      sessionId,
-      candidate: { candidate: 'candidate:1 1 UDP 2130706431 127.0.0.1 50000 typ host' },
-    });
-    expect(peerB.pc.candidates.length).toBe(1);
-
-    // Simulate RTP packet from User A and ensure it forwards without error
-    const forwardedTrack = peerB.pc.addedTracks[0].track;
-    let rtpForwarded = false;
-    forwardedTrack.writeRtp = () => {
-      rtpForwarded = true;
-    };
-    remoteTrackA.onReceiveRtp.execute({ clone: () => ({ header: {} }) });
-    expect(rtpForwarded).toBe(true);
+  it('cleans up an unsuccessful join', async () => {
+    await assert.rejects(join('alice', 'fail'), /Bad offer/);
+    assert.equal(service.getActiveSessionCount(), 0);
+    await join('alice');
+    await assert.rejects(join('alice'), /Leave your current call/);
   });
 
-  it('should support 1-to-1 private SFU calls, media state toggling, and clean participant departure', async () => {
-    const socketA = createSocket('user-a', 'Ashik', 'Engineering');
-    const socketB = createSocket('user-b', 'Jen', 'Engineering');
-    const privateSessionId = 'private:user-a:user-b';
+  it('offers forwarded tracks after initial negotiation and waits for the matching answer', async () => {
+    const alice = await join('alice');
+    const bob = await join('bob');
+    const video = alice.pc.publish('video');
+    alice.pc.publish('audio');
+    service.ready(sessionId, 'alice');
+    assert.equal(bob.pc.senders.length, 0);
+    service.ready(sessionId, 'bob');
+    await new Promise(setImmediate);
+    await bob.negotiationChain;
+    assert.equal(bob.pc.senders.length, 2);
+    assert.equal(bob.pc.offers, 1);
 
-    await new Promise((resolve) => {
-      socketA.trigger(
-        'sfu:join',
-        {
-          sessionId: privateSessionId,
-          mode: 'audio',
-          sdp: { type: 'offer', sdp: 'v=0\r\na=private-offer-a\r\n' },
-        },
-        resolve
-      );
-    });
+    alice.pc.publish('audio');
+    await new Promise(setImmediate);
+    assert.equal(bob.pc.offers, 1);
+    await service.handleAnswer({ sessionId, socketId: 'bob', revision: 99, sdp: { type: 'answer', sdp: 'stale' } });
+    assert.equal(bob.pc.remote.sdp, 'offer');
 
-    await new Promise((resolve) => {
-      socketB.trigger(
-        'sfu:join',
-        {
-          sessionId: privateSessionId,
-          mode: 'audio',
-          sdp: { type: 'offer', sdp: 'v=0\r\na=private-offer-b\r\n' },
-        },
-        resolve
-      );
-    });
+    const first = emitted.find((item) => item.event === 'sfu:offer' && item.target === 'bob');
+    assert.match(first.data.sdp.sdp, /s=-\r\nc=IN IP4 0\.0\.0\.0\r\nt=0 0/);
+    await service.handleAnswer({ sessionId, socketId: 'bob', revision: first.data.revision, sdp: { type: 'answer', sdp: 'valid' } });
+    await bob.negotiationChain;
+    assert.equal(bob.pc.offers, 2);
 
-    expect(sfuService.getSessionParticipants(privateSessionId).length).toBe(2);
-
-    // Toggle microphone state
-    socketA.trigger('sfu:media-state', {
-      sessionId: privateSessionId,
-      audioEnabled: false,
-    });
-    const mediaStateEvent = emitted.find(
-      (e) => e.target === 'user-b' && e.event === 'sfu:media-state'
-    );
-    expect(mediaStateEvent).toBeDefined();
-    expect(mediaStateEvent.data.audioEnabled).toBe(false);
-
-    // Leave session
-    await new Promise((resolve) => {
-      socketA.trigger('sfu:leave', { sessionId: privateSessionId }, resolve);
-    });
-
-    expect(sfuService.getSessionParticipants(privateSessionId).length).toBe(1);
-    expect(
-      emitted.some((e) => e.target === 'user-b' && e.event === 'sfu:participant-left')
-    ).toBe(true);
+    const forwarded = { header: {} };
+    let received;
+    bob.pc.senders[0].track.writeRtp = (packet) => { received = packet; };
+    video.onReceiveRtp.emit(forwarded);
+    assert.equal(received, forwarded);
+    await service.leaveSession(sessionId, 'alice');
+    assert.equal(video.onReceiveRtp.listeners.size, 0);
+    assert.equal(bob.pc.senders.length, 0);
+    assert.equal(alice.pc.closed, true);
   });
 });

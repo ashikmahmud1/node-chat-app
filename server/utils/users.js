@@ -27,12 +27,12 @@ class Users {
     );
   }
 
-  addUser(id, name, room, status = 'online') {
+  addUser(id, name, room, status = 'online', guestId = id) {
     const cleanName = typeof name === 'string' ? name.trim() : name;
     const cleanRoom = this.getCanonicalRoom(room);
     const cleanStatus = VALID_STATUSES.has(status) ? status : 'online';
     this.removeUser(id);
-    const user = { id, name: cleanName, room: cleanRoom, status: cleanStatus };
+    const user = { id, name: cleanName, room: cleanRoom, status: cleanStatus, guestId };
     this.users.push(user);
     return user;
   }

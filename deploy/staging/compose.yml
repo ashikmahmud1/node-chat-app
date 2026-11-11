@@ -1,0 +1,88 @@
+services:
+  chat-app:
+    build:
+      context: ../..
+    init: true
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PUBLIC_ORIGIN: https://${STAGING_HOST:?Set STAGING_HOST}
+      TRUST_PROXY: "true"
+      STORAGE_TYPE: local
+      CHAT_RETENTION_DAYS: "7"
+      RTC_ICE_TRANSPORT_POLICY: relay
+      RTC_BIND_ADDRESS: ${STAGING_SFU_IP:-10.253.42.10}
+      TURN_URL: turns:${STAGING_HOST:?Set STAGING_HOST}:5349?transport=tcp
+      TURN_SECRET: ${STAGING_TURN_SECRET:?Set STAGING_TURN_SECRET}
+    networks:
+      media:
+        ipv4_address: ${STAGING_SFU_IP:-10.253.42.10}
+    volumes:
+      - chat_data:/usr/src/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  turn:
+    image: coturn/coturn:4.18.0-alpine@sha256:c29135c08565810d37053f384584392b7c24b69570fc81a721b878d6fe63e04e
+    entrypoint: ["/bin/sh", "/etc/nexus/turn-entrypoint.sh"]
+    user: "0:0"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      STAGING_HOST: ${STAGING_HOST:?Set STAGING_HOST}
+      TURN_SECRET: ${STAGING_TURN_SECRET:?Set STAGING_TURN_SECRET}
+      SFU_ADDRESS: ${STAGING_SFU_IP:-10.253.42.10}
+      RELAY_ADDRESS: ${STAGING_RELAY_IP:-10.253.42.11}
+    ports:
+      - "${STAGING_BIND_IP:-0.0.0.0}:5349:5349/tcp"
+    networks:
+      edge:
+      media:
+        ipv4_address: ${STAGING_RELAY_IP:-10.253.42.11}
+    volumes:
+      - ./turnserver.conf:/etc/nexus/turnserver.conf:ro
+      - ./turn-entrypoint.sh:/etc/nexus/turn-entrypoint.sh:ro
+      - ${STAGING_TLS_DIR:?Set STAGING_TLS_DIR}:/etc/nexus/tls:ro
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5349"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  web:
+    image: caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    restart: unless-stopped
+    depends_on:
+      chat-app:
+        condition: service_healthy
+      turn:
+        condition: service_healthy
+    environment:
+      STAGING_HOST: ${STAGING_HOST:?Set STAGING_HOST}
+      STAGING_USER: ${STAGING_USER:?Set STAGING_USER}
+      STAGING_PASSWORD_HASH: ${STAGING_PASSWORD_HASH:?Set STAGING_PASSWORD_HASH}
+    ports:
+      - "${STAGING_BIND_IP:-0.0.0.0}:443:443/tcp"
+    networks:
+      - edge
+      - media
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${STAGING_TLS_DIR:?Set STAGING_TLS_DIR}:/etc/nexus/tls:ro
+
+networks:
+  edge:
+  media:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${STAGING_MEDIA_SUBNET:-10.253.42.0/24}
+
+volumes:
+  chat_data:

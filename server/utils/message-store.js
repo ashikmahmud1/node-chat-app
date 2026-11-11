@@ -1,164 +1,149 @@
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
+const { randomBytes } = require('node:crypto');
+const { DatabaseSync } = require('node:sqlite');
 const config = require('../config');
-const { logger } = require('./logger');
 
 class MessageStore {
-  constructor(
-    maxMessagesPerRoom = config.limits.maxRoomHistory,
-    persistPath = config.env === 'test'
-      ? null
-      : path.join(config.paths.uploads, 'message-history.json')
-  ) {
-    this.maxMessagesPerRoom = maxMessagesPerRoom;
-    this.persistPath = persistPath;
-    // Map<normalizedRoom, Array<MessageObject>>
-    this.rooms = new Map();
-    this.loadFromDisk();
+  constructor(limit = config.limits.maxRoomHistory, databasePath = config.paths.database) {
+    this.limit = limit;
+    if (databasePath !== ':memory:') {
+      fs.mkdirSync(path.dirname(databasePath), { recursive: true, mode: 0o700 });
+      fs.closeSync(fs.openSync(databasePath, 'a', 0o600));
+    }
+    this.db = new DatabaseSync(databasePath);
+    this.db.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA busy_timeout = 5000;
+      CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+      CREATE TABLE IF NOT EXISTS messages (
+        sequence INTEGER PRIMARY KEY,
+        id TEXT UNIQUE NOT NULL,
+        conversation TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        payload TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS messages_conversation ON messages (conversation, sequence DESC);
+      CREATE INDEX IF NOT EXISTS messages_created ON messages (created_at);
+      CREATE TABLE IF NOT EXISTS attachments (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        room TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        recipient TEXT,
+        created_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS attachments_created ON attachments (created_at);
+    `);
   }
 
-  normalizeKey(room) {
-    return typeof room === 'string' ? room.trim().toLowerCase() : '';
+  getSessionKey() {
+    this.db.prepare("INSERT OR IGNORE INTO settings VALUES ('session_key', ?)").run(randomBytes(32).toString('hex'));
+    return Buffer.from(this.db.prepare("SELECT value FROM settings WHERE name = 'session_key'").get().value, 'hex');
   }
 
-  loadFromDisk() {
-    if (!this.persistPath || !fs.existsSync(this.persistPath)) return;
+  transaction(run) {
+    this.db.exec('BEGIN IMMEDIATE');
     try {
-      const raw = fs.readFileSync(this.persistPath, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') {
-        Object.entries(parsed).forEach(([key, messages]) => {
-          if (Array.isArray(messages)) {
-            this.rooms.set(key, messages.slice(-this.maxMessagesPerRoom));
-          }
-        });
-      }
-    } catch (err) {
-      logger.warn('Failed to load persisted message history', { error: err.message });
+      const result = run();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
     }
   }
 
-  saveToDisk() {
-    if (!this.persistPath) return;
-    try {
-      const dir = path.dirname(this.persistPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      const serializable = {};
-      for (const [key, messages] of this.rooms.entries()) {
-        serializable[key] = messages;
-      }
-      const tempPath = `${this.persistPath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify(serializable, null, 2), 'utf8');
-      fs.renameSync(tempPath, this.persistPath);
-    } catch (err) {
-      logger.warn('Failed to persist message history', { error: err.message });
-    }
+  addMessage(conversation, message) {
+    const saved = { reactions: {}, edited: false, ...message };
+    return this.transaction(() => {
+      this.db.prepare('INSERT INTO messages (id, conversation, created_at, payload) VALUES (?, ?, ?, ?)')
+        .run(saved.id, conversation, saved.createdAt, JSON.stringify(saved));
+      this.db.prepare(`
+        DELETE FROM messages WHERE sequence IN (
+          SELECT sequence FROM messages WHERE conversation = ? ORDER BY sequence DESC LIMIT -1 OFFSET ?
+        )
+      `).run(conversation, this.limit);
+      return saved;
+    });
   }
 
-  async flushToDisk() {
-    this.saveToDisk();
+  getMessage(conversation, id) {
+    const row = this.db.prepare('SELECT payload FROM messages WHERE conversation = ? AND id = ? AND created_at >= ?').get(conversation, id, Date.now() - config.limits.retentionMs);
+    return row ? JSON.parse(row.payload) : null;
   }
 
-  addMessage(room, message) {
-    const key = this.normalizeKey(room);
-    if (!key || !message) return null;
-
-    if (!this.rooms.has(key)) {
-      this.rooms.set(key, []);
-    }
-
-    const enriched = {
-      reactions: {},
-      edited: false,
-      ...message,
-    };
-
-    const list = this.rooms.get(key);
-    list.push(enriched);
-
-    if (list.length > this.maxMessagesPerRoom) {
-      list.splice(0, list.length - this.maxMessagesPerRoom);
-    }
-
-    this.saveToDisk();
-    return enriched;
+  editMessage(conversation, id, authorId, text) {
+    const message = this.getMessage(conversation, id);
+    if (!message || message.authorId !== authorId || message.type !== 'text') return null;
+    const updated = { ...message, text, edited: true, editedAt: Date.now() };
+    this.updateMessage(updated);
+    return updated;
   }
 
-  editMessage(room, messageId, senderName, newText) {
-    const key = this.normalizeKey(room);
-    if (!key || !this.rooms.has(key)) return null;
-
-    const list = this.rooms.get(key);
-    const msg = list.find((m) => m.id === messageId);
-    if (!msg || msg.from !== senderName || msg.type !== 'text') return null;
-
-    msg.text = newText;
-    msg.edited = true;
-    msg.editedAt = Date.now();
-    this.saveToDisk();
-    return msg;
-  }
-
-  deleteMessage(room, messageId, senderName) {
-    const key = this.normalizeKey(room);
-    if (!key || !this.rooms.has(key)) return false;
-
-    const list = this.rooms.get(key);
-    const index = list.findIndex((m) => m.id === messageId && m.from === senderName);
-    if (index === -1) return false;
-
-    list.splice(index, 1);
-    this.saveToDisk();
+  deleteMessage(conversation, id, authorId) {
+    const message = this.getMessage(conversation, id);
+    if (!message || message.authorId !== authorId) return false;
+    this.db.prepare('DELETE FROM messages WHERE id = ?').run(id);
     return true;
   }
 
-  toggleReaction(room, messageId, emoji, userName) {
-    const key = this.normalizeKey(room);
-    if (!key || !this.rooms.has(key) || !emoji || !userName) return null;
-
-    const list = this.rooms.get(key);
-    const msg = list.find((m) => m.id === messageId);
-    if (!msg) return null;
-
-    if (!msg.reactions || typeof msg.reactions !== 'object') {
-      msg.reactions = {};
-    }
-    if (!Array.isArray(msg.reactions[emoji])) {
-      msg.reactions[emoji] = [];
-    }
-
-    const usersList = msg.reactions[emoji];
-    const idx = usersList.indexOf(userName);
-    if (idx === -1) {
-      usersList.push(userName);
-    } else {
-      usersList.splice(idx, 1);
-      if (usersList.length === 0) {
-        delete msg.reactions[emoji];
-      }
-    }
-
-    this.saveToDisk();
-    return {
-      messageId: msg.id,
-      reactions: msg.reactions,
-    };
+  toggleReaction(conversation, id, emoji, user) {
+    const message = this.getMessage(conversation, id);
+    if (!message) return null;
+    const reactions = message.reactions[emoji] || [];
+    const existing = reactions.some((reaction) => reaction.authorId === user.guestId);
+    if (!existing && reactions.length >= config.limits.maxRoomUsers) return null;
+    const next = existing
+      ? reactions.filter((reaction) => reaction.authorId !== user.guestId)
+      : [...reactions, { authorId: user.guestId, name: user.name }];
+    if (next.length) message.reactions[emoji] = next;
+    else delete message.reactions[emoji];
+    this.updateMessage(message);
+    return { messageId: id, reactions: message.reactions };
   }
 
-  getMessages(room) {
-    const key = this.normalizeKey(room);
-    if (!key || !this.rooms.has(key)) return [];
-    return [...this.rooms.get(key)];
+  updateMessage(message) {
+    this.db.prepare('UPDATE messages SET payload = ? WHERE id = ?').run(JSON.stringify(message), message.id);
   }
 
-  clearRoom(room) {
-    const key = this.normalizeKey(room);
-    if (key) {
-      this.rooms.delete(key);
-      this.saveToDisk();
-    }
+  getMessages(conversation) {
+    return this.db.prepare('SELECT payload FROM messages WHERE conversation = ? AND created_at >= ? ORDER BY sequence')
+      .all(conversation, Date.now() - config.limits.retentionMs).map((row) => JSON.parse(row.payload));
+  }
+
+  reserveAttachment({ id, name, room, sender, recipient }) {
+    this.db.prepare('INSERT INTO attachments VALUES (?, ?, ?, ?, ?, ?)').run(id, name, room, sender, recipient, Date.now());
+  }
+
+  setAttachmentName(id, name) {
+    this.db.prepare('UPDATE attachments SET name = ? WHERE id = ?').run(name, id);
+  }
+
+  getAttachment(id) {
+    return this.db.prepare(`
+      SELECT attachments.* FROM attachments JOIN messages USING (id)
+      WHERE id = ? AND messages.created_at >= ?
+    `).get(id, Date.now() - config.limits.retentionMs);
+  }
+
+  purgeExpiredMessages() {
+    this.db.prepare('DELETE FROM messages WHERE created_at < ?').run(Date.now() - config.limits.retentionMs);
+  }
+
+  getOrphanAttachments() {
+    return this.db.prepare(`
+      SELECT attachments.id FROM attachments LEFT JOIN messages USING (id)
+      WHERE messages.id IS NULL AND attachments.created_at < ? LIMIT 200
+    `).all(Date.now() - 3600000);
+  }
+
+  forgetAttachment(id) {
+    this.db.prepare('DELETE FROM attachments WHERE id = ?').run(id);
+  }
+
+  close() {
+    this.db.close();
   }
 }
 

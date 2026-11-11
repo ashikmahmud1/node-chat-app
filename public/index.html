@@ -3,110 +3,44 @@
 
 <head>
   <meta charset="utf-8">
-  <title>Join Workspace | NexusChat SFU</title>
+  <title>Join Group | NexusChat</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💬</text></svg>">
-  <!-- Bootstrap 5.3.8 CSS & Font Awesome 7.3.1 -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.3.1/css/all.min.css">
+  <link rel="stylesheet" href="/assets/icons/css/all.min.css">
   <link rel="stylesheet" href="/css/styles.css">
 </head>
 
 <body class="centered-form">
   <div class="centered-form__form">
-    <form action="/chat.html" id="join-form">
+    <form action="/chat.html" method="post" id="join-form">
       <div class="brand-header">
         <div class="brand-logo">
           <i class="fa-solid fa-comments" aria-hidden="true"></i>
         </div>
         <h3>NexusChat</h3>
-        <p class="brand-subtitle">Real-time Group &amp; Personal Messaging with WebRTC SFU</p>
+        <p class="brand-subtitle">Group chat, direct messages, and calls</p>
       </div>
       <div class="form-field">
         <label for="name-input"><i class="fa-regular fa-user" aria-hidden="true"></i> Display Name</label>
-        <input id="name-input" type="text" name="name" maxlength="50" placeholder="e.g. Ashik" autofocus required autocomplete="off" />
+        <input id="name-input" type="text" name="name" maxlength="50" placeholder="e.g. Alex" autofocus required autocomplete="off" />
       </div>
       <div class="form-field">
         <label for="room-input"><i class="fa-solid fa-hashtag" aria-hidden="true"></i> Group / Channel</label>
         <input id="room-input" type="text" name="room" list="active-rooms" maxlength="50" placeholder="e.g. Engineering" required autocomplete="off" />
         <datalist id="active-rooms"></datalist>
+        <p class="group-visibility">Anyone can join a group by name.</p>
         <div id="active-rooms-pills" class="active-rooms-pills"></div>
       </div>
+      <p id="join-status" class="join-status" role="status"></p>
       <div class="form-field">
         <button type="submit" class="btn-join-primary">
-          <span>Join Workspace</span>
+          <span>Join Group</span>
           <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
         </button>
       </div>
     </form>
   </div>
 
-  <!-- jQuery 4.0.0 & Bootstrap 5.3.8 Bundle -->
-  <script src="/js/libs/jquery-4.0.0.min.js"></script>
-  <script>
-    if (!window.jQuery) {
-      document.write('<script src="https://code.jquery.com/jquery-4.0.0.min.js"><\/script>');
-    }
-  </script>
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
-  <script>
-    $(function () {
-      var $form = $('#join-form');
-      var $nameInput = $('#name-input');
-      var $roomInput = $('#room-input');
-      var $datalist = $('#active-rooms');
-      var $pillsContainer = $('#active-rooms-pills');
-
-      try {
-        var savedName = sessionStorage.getItem('nexus_name') || localStorage.getItem('nexus_name');
-        var savedRoom = sessionStorage.getItem('nexus_room') || localStorage.getItem('nexus_room');
-        if (savedName) $nameInput.val(savedName);
-        if (savedRoom) $roomInput.val(savedRoom);
-      } catch (e) {}
-
-      if (window.fetch && $datalist.length) {
-        fetch('/api/rooms')
-          .then(function (res) { return res.json(); })
-          .then(function (data) {
-            if (data && Array.isArray(data.rooms) && data.rooms.length > 0) {
-              var $label = $('<span class="pills-label">Active groups:</span>');
-              $pillsContainer.append($label);
-
-              data.rooms.forEach(function (room) {
-                var $option = $('<option></option>').attr('value', room);
-                $datalist.append($option);
-
-                var $pill = $('<button type="button" class="room-pill"></button>').text('# ' + room);
-                $pill.on('click', function (e) {
-                  e.preventDefault();
-                  $roomInput.val(room).trigger('focus');
-                });
-                $pillsContainer.append($pill);
-              });
-            }
-          })
-          .catch(function () {});
-      }
-
-      $form.on('submit', function (e) {
-        var nameVal = ($nameInput.val() || '').trim();
-        var roomVal = ($roomInput.val() || '').trim();
-        $nameInput.val(nameVal);
-        $roomInput.val(roomVal);
-        if (!nameVal || !roomVal) {
-          e.preventDefault();
-          alert('Please enter a valid display name and group name.');
-          return;
-        }
-        try {
-          sessionStorage.setItem('nexus_name', nameVal);
-          sessionStorage.setItem('nexus_room', roomVal);
-          localStorage.setItem('nexus_name', nameVal);
-          localStorage.setItem('nexus_room', roomVal);
-        } catch (err) {}
-      });
-    });
-  </script>
+  <script src="/js/join.js" defer></script>
 </body>
-
 </html>

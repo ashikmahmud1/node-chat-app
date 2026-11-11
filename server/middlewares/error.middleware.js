@@ -1,33 +1,20 @@
 const multer = require('multer');
+const { logger } = require('../utils/logger');
 
-const notFoundHandler = (req, res) => {
-  if (res.headersSent) {
-    return;
-  }
-  res.status(404).json({
-    error: 'Resource not found',
+const notFoundHandler = (req, res) => res.status(404).json({ error: 'Resource not found.' });
+
+function errorHandler(error, req, res, next) {
+  if (res.headersSent) return next(error);
+  const status = error instanceof multer.MulterError
+    ? (error.code === 'LIMIT_FILE_SIZE' ? 413 : 400)
+    : (Number.isInteger(error.status) && error.status >= 400 && error.status < 500 ? error.status : 500);
+  if (status === 500) logger.error('HTTP request failed', { requestId: req.requestId, error: error.message });
+  return res.status(status).json({
+    error: status === 500 ? 'The server could not complete the request.' :
+      status === 413 ? 'Files must be 50 MB or smaller.' :
+      status === 404 ? 'Resource not found.' :
+      status === 415 ? 'This file type is not allowed.' : 'Invalid request.',
   });
-};
+}
 
-const errorHandler = (err, req, res, next) => {
-  // If headers have already been sent to the client, delegate to the default Express error handler
-  if (res.headersSent) {
-    return next(err);
-  }
-
-  if (err instanceof multer.MulterError) {
-    return res.status(400).json({
-      error: `File upload error: ${err.message}`,
-    });
-  }
-
-  const statusCode = err.status || err.statusCode || 500;
-  return res.status(statusCode).json({
-    error: err.message || 'Internal Server Error',
-  });
-};
-
-module.exports = {
-  notFoundHandler,
-  errorHandler,
-};
+module.exports = { notFoundHandler, errorHandler };

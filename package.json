@@ -4,29 +4,33 @@
   "description": "Real-time text, file, location, audio, and video chat application built with Node.js, Express, and Socket.IO",
   "main": "server/server.js",
   "scripts": {
-    "start": "node server/server.js",
-    "dev": "nodemon --watch server server/server.js",
+    "start": "node --env-file-if-exists=.env server/server.js",
+    "dev": "nodemon --exec \"node --env-file-if-exists=.env\" server/server.js",
     "test": "mocha 'tests/**/*.test.js'",
-    "test-watch": "nodemon --exec 'npm test'"
+    "test-watch": "nodemon --exec 'npm test'",
+    "import:history": "node --env-file-if-exists=.env scripts/import-history.js"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "^24.0.0"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1165.0",
+    "@fortawesome/fontawesome-free": "7.3.1",
     "express": "^5.3.0",
-    "moment": "^2.31.0",
+    "jquery": "4.0.0",
     "multer": "^2.5.0",
     "multer-s3": "^3.0.1",
+    "mustache": "4.2.0",
     "socket.io": "^4.8.4",
     "werift": "^0.27.0"
   },
   "devDependencies": {
     "expect": "^30.5.2",
     "mocha": "^12.0.3",
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "socket.io-client": "4.8.4"
   },
   "overrides": {
     "glob": "^14.0.4",

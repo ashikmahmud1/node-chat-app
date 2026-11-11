@@ -7,3 +7,5 @@ tests
 data/*
 !data/.gitkeep
 Node Chat App.gif
+
+deploy/

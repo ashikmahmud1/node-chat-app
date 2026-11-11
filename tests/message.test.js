@@ -27,17 +27,16 @@ describe('Message Utilities', () => {
   });
 
   describe('generateFiles', () => {
-    it('should generate a valid file message object with consistent URL properties', () => {
+    it('should generate a valid file message object with a scoped download URL', () => {
       const from = 'Ashik';
       const filename = '1700000000-sample.pdf';
-      const fileMessage = generateFiles(from, filename);
+      const fileMessage = generateFiles(from, 'test-id', filename);
 
       expect(typeof fileMessage.createdAt).toBe('number');
       expect(fileMessage).toMatchObject({
         from,
-        fileUrl: filename,
-        fileurl: filename,
-        url: filename,
+        filename,
+        url: '/api/files/test-id',
       });
     });
   });
