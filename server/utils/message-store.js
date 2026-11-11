@@ -49,10 +49,16 @@ class MessageStore {
       for (const [key, messages] of this.rooms.entries()) {
         serializable[key] = messages;
       }
-      fs.writeFileSync(this.persistPath, JSON.stringify(serializable, null, 2), 'utf8');
+      const tempPath = `${this.persistPath}.tmp`;
+      fs.writeFileSync(tempPath, JSON.stringify(serializable, null, 2), 'utf8');
+      fs.renameSync(tempPath, this.persistPath);
     } catch (err) {
       logger.warn('Failed to persist message history', { error: err.message });
     }
+  }
+
+  async flushToDisk() {
+    this.saveToDisk();
   }
 
   addMessage(room, message) {

@@ -1692,6 +1692,12 @@ $(function () {
   socket.on('disconnect', function () {
     $('#connection-status-text').text('Reconnecting...');
     $('.status-pulse-dot').addClass('status-pulse-dot--disconnected');
+    if (personalCallActive) {
+      end1to1Call(false, 'disconnected');
+    }
+    if (roomCallActive) {
+      leaveRoomSfuCall();
+    }
   });
 
   function openPersonalChatForPeer(id) {
@@ -2051,9 +2057,17 @@ $(function () {
     if (!peerId) return;
 
     var isVideo = mode === 'video';
+    var unmetReasonText =
+      reason === 'declined'
+        ? 'Declined'
+        : reason === 'busy'
+          ? 'Busy / Do Not Disturb'
+          : reason === 'offline'
+            ? 'Offline'
+            : 'No answer';
     var durationText = wasConnected
       ? formatCallDuration(durationSec)
-      : (reason === 'declined' ? 'Declined' : 'No answer');
+      : unmetReasonText;
     var callTitle = '';
     var callIcon = '';
     var callStatusClass = '';

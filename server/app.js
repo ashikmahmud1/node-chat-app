@@ -11,6 +11,9 @@ const createApp = (usersInstance = null, sfuServiceInstance = null) => {
   const app = express();
 
   app.disable('x-powered-by');
+  if (config.env === 'production' || process.env.TRUST_PROXY === 'true') {
+    app.set('trust proxy', 1);
+  }
 
   // Completely bypass Express for Socket.IO polling and engine requests so Engine.IO has exclusive control
   app.use((req, res, next) => {
@@ -40,6 +43,9 @@ const createApp = (usersInstance = null, sfuServiceInstance = null) => {
       'Permissions-Policy',
       'camera=(self), microphone=(self), geolocation=(self), display-capture=(self)'
     );
+    if (config.env === 'production') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
     next();
   });
 

@@ -348,6 +348,19 @@ class SfuService {
     }
   }
 
+  async closeAllSessions() {
+    const sessionIds = Array.from(this.sessions.keys());
+    for (const sessionId of sessionIds) {
+      const session = this.sessions.get(sessionId);
+      if (!session) continue;
+      const peerIds = Array.from(session.keys());
+      for (const socketId of peerIds) {
+        await this.leaveSession(sessionId, socketId, false);
+      }
+    }
+    this.sessions.clear();
+  }
+
   broadcastParticipants(sessionId) {
     const participants = this.getSessionParticipants(sessionId);
     const session = this.sessions.get(sessionId);
