@@ -375,6 +375,29 @@
     </li>
 </script>
 
+<script id="call-message-template" type="text/template">
+    <li class="message message--card message--call {{extraClass}}">
+        <div class="message__avatar">{{initials}}</div>
+        <div class="message__content">
+            <div class="message__title">
+                <h4>{{from}}</h4>
+                <span class="user-time">{{createdAt}}</span>
+            </div>
+            <div class="message__body">
+                <div class="message-card-attachment message-card-attachment--call {{callStatusClass}}">
+                    <div class="message-card-icon message-card-icon--call">
+                        <i class="{{callIcon}}" aria-hidden="true"></i>
+                    </div>
+                    <div class="message-card-info">
+                        <span class="message-card-title">{{callTitle}}</span>
+                        <span class="call-duration-text"><i class="fa-regular fa-clock" aria-hidden="true"></i> {{callDuration}}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </li>
+</script>
+
 <!-- Local & Fallback Script Dependencies -->
 <script src="/js/libs/socket.io.min.js"></script>
 <script>

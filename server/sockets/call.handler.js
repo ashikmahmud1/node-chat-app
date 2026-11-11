@@ -39,21 +39,33 @@ const registerCallHandlers = (io, socket, users) => {
     socket.broadcast.to(userid).emit('notifyVideoCallReceived');
   });
 
-  socket.on('callCancelled', (userid) => {
-    if (!userid || userid === socket.id) return;
-    socket.broadcast.to(userid).emit('callCancelled', socket.id);
+  socket.on('callCancelled', (payload) => {
+    const targetUserId = typeof payload === 'object' && payload !== null ? payload.userid : payload;
+    if (!targetUserId || targetUserId === socket.id) return;
+    socket.broadcast.to(targetUserId).emit('callCancelled', {
+      callerId: socket.id,
+      ...(typeof payload === 'object' ? payload : { userid: targetUserId }),
+    });
   });
 
-  socket.on('callEnded', (userid) => {
+  socket.on('callEnded', (payload) => {
     const user = users.getUser(socket.id);
-    if (!userid || userid === socket.id) return;
-    socket.broadcast.to(userid).emit('callEnded', user);
+    const targetUserId = typeof payload === 'object' && payload !== null ? payload.userid : payload;
+    if (!targetUserId || targetUserId === socket.id) return;
+    socket.broadcast.to(targetUserId).emit('callEnded', {
+      user,
+      ...(typeof payload === 'object' ? payload : { userid: targetUserId }),
+    });
   });
 
-  socket.on('videoCallEnded', (userid) => {
+  socket.on('videoCallEnded', (payload) => {
     const user = users.getUser(socket.id);
-    if (!userid || userid === socket.id) return;
-    socket.broadcast.to(userid).emit('videoCallEnded', user);
+    const targetUserId = typeof payload === 'object' && payload !== null ? payload.userid : payload;
+    if (!targetUserId || targetUserId === socket.id) return;
+    socket.broadcast.to(targetUserId).emit('videoCallEnded', {
+      user,
+      ...(typeof payload === 'object' ? payload : { userid: targetUserId }),
+    });
   });
 
   socket.on('userBusy', (userid) => {
@@ -66,14 +78,24 @@ const registerCallHandlers = (io, socket, users) => {
     socket.broadcast.to(userid).emit('userVideoBusy');
   });
 
-  socket.on('callNotReceived', (userid) => {
-    if (!userid || userid === socket.id) return;
-    socket.broadcast.to(userid).emit('callNotReceived');
+  socket.on('callNotReceived', (payload) => {
+    const user = users.getUser(socket.id);
+    const targetUserId = typeof payload === 'object' && payload !== null ? payload.userid : payload;
+    if (!targetUserId || targetUserId === socket.id) return;
+    socket.broadcast.to(targetUserId).emit('callNotReceived', {
+      user,
+      ...(typeof payload === 'object' ? payload : { userid: targetUserId }),
+    });
   });
 
-  socket.on('videoCallNotReceived', (userid) => {
-    if (!userid || userid === socket.id) return;
-    socket.broadcast.to(userid).emit('videoCallNotReceived');
+  socket.on('videoCallNotReceived', (payload) => {
+    const user = users.getUser(socket.id);
+    const targetUserId = typeof payload === 'object' && payload !== null ? payload.userid : payload;
+    if (!targetUserId || targetUserId === socket.id) return;
+    socket.broadcast.to(targetUserId).emit('videoCallNotReceived', {
+      user,
+      ...(typeof payload === 'object' ? payload : { userid: targetUserId }),
+    });
   });
 };
 

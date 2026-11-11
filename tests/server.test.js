@@ -348,6 +348,56 @@ describe('Controllers, Middlewares & Socket Handlers', () => {
       expect(socketA.directEmits.some((e) => e.event === 'userOffline')).toBe(true);
     });
 
+    it('should forward callEnded and videoCallEnded with duration and metadata to peer', () => {
+      const { createSocket, broadcasted } = createMockSocketEnv();
+      const socketA = createSocket('socket-a');
+      const socketB = createSocket('socket-b');
+
+      socketA.trigger('join', { name: 'Ashik', room: 'DevRoom' }, () => {});
+      socketB.trigger('join', { name: 'Jen', room: 'DevRoom' }, () => {});
+
+      // Call ended with structured payload
+      socketA.trigger('callEnded', {
+        userid: 'socket-b',
+        mode: 'audio',
+        durationSec: 145,
+        reason: 'Call completed',
+      });
+
+      const callEndedEvent = broadcasted.find(
+        (b) => b.from === 'socket-a' && b.target === 'socket-b' && b.event === 'callEnded'
+      );
+      expect(callEndedEvent).toBeDefined();
+      expect(callEndedEvent.data).toEqual({
+        user: {
+          id: 'socket-a',
+          name: 'Ashik',
+          room: 'DevRoom',
+          status: 'online',
+        },
+        userid: 'socket-b',
+        mode: 'audio',
+        durationSec: 145,
+        reason: 'Call completed',
+      });
+
+      // Video call ended with legacy string userid
+      socketB.trigger('videoCallEnded', 'socket-a');
+      const videoCallEndedEvent = broadcasted.find(
+        (b) => b.from === 'socket-b' && b.target === 'socket-a' && b.event === 'videoCallEnded'
+      );
+      expect(videoCallEndedEvent).toBeDefined();
+      expect(videoCallEndedEvent.data).toEqual({
+        user: {
+          id: 'socket-b',
+          name: 'Jen',
+          room: 'DevRoom',
+          status: 'online',
+        },
+        userid: 'socket-a',
+      });
+    });
+
     it('should support live group switching via room:switch and broadcast updateRoomList', () => {
       const { createSocket, emitted, users, messageStore } = createMockSocketEnv();
       const socketA = createSocket('socket-a');

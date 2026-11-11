@@ -1553,6 +1553,53 @@ button:disabled {
   color: #e0e7ff;
 }
 
+/* Call Summary Cards in Chat */
+.message-card-attachment--call {
+  background: rgba(241, 245, 249, 0.85);
+  border: 1px solid #cbd5e1;
+}
+
+.message-card-icon--call {
+  background: var(--primary-subtle);
+  color: var(--primary);
+}
+
+.call-status--completed .message-card-icon--call {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success);
+}
+
+.call-status--missed .message-card-icon--call {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
+.call-duration-text {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  font-weight: 500;
+}
+
+.message--outgoing .message-card-attachment--call {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.message--outgoing .call-status--completed .message-card-icon--call,
+.message--outgoing .call-status--missed .message-card-icon--call,
+.message--outgoing .message-card-icon--call {
+  background: rgba(255, 255, 255, 0.24);
+  color: #ffffff;
+}
+
+.message--outgoing .call-duration-text {
+  color: rgba(255, 255, 255, 0.88);
+}
+
 /* Message Hover Toolbar & Reactions */
 .message-toolbar {
   display: flex;

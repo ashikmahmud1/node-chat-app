@@ -69,6 +69,7 @@ $(function () {
   var incomingCallInfo = null; // { callerId, callerName, mode }
   var ringToneInterval = null;
   var activeMediaStream = null;
+  var personalCallConnectedAt = null;
 
   // Active Canvas State ('group' or 'personal')
   var activeChatMode = 'group';
@@ -92,6 +93,8 @@ $(function () {
   var roomScreenStream = null;
   var roomCallActive = false;
   var roomCallTimerTimeout = null;
+  var roomCallConnectedAt = null;
+  var roomCallLastMode = 'audio';
   var roomTrackOwners = {};
 
   // Fetch dynamic WebRTC STUN/TURN configuration from backend
@@ -473,6 +476,20 @@ $(function () {
     return ts[1] + ':' + ts[2];
   }
 
+  function formatCallDuration(seconds) {
+    var s = Math.max(0, Math.floor(seconds || 0));
+    var hrs = Math.floor(s / 3600);
+    var mins = Math.floor((s % 3600) / 60);
+    var remSecs = s % 60;
+    if (hrs > 0) {
+      return hrs + 'h ' + mins + 'm ' + (remSecs < 10 ? '0' : '') + remSecs + 's';
+    }
+    if (mins === 0) {
+      return s + 's';
+    }
+    return mins + 'm ' + (remSecs < 10 ? '0' : '') + remSecs + 's';
+  }
+
   function updatePersonalCallTimer() {
     if (!personalCallActive) return;
     var $timer = $('#personal-call-timer');
@@ -755,6 +772,8 @@ $(function () {
       .then(function (mediaStream) {
         roomLocalStream = mediaStream;
         roomCallActive = true;
+        roomCallConnectedAt = Date.now();
+        roomCallLastMode = mode;
         roomSfuSessionId = 'room:' + currentRoomName;
 
         $('#room-call-stage').removeClass('hide-element');
@@ -910,6 +929,21 @@ $(function () {
     roomCallActive = false;
     stopRoomCallTimer();
     stopScreenShareTrack();
+
+    if (roomCallConnectedAt) {
+      var roomDuration = Math.max(0, Math.floor((Date.now() - roomCallConnectedAt) / 1000));
+      if (roomDuration > 0) {
+        var roomCallLabel = (roomCallLastMode === 'video' ? 'Video' : 'Audio') + ' Conference';
+        socket.emit('createMessage', {
+          text: (roomCallLastMode === 'video' ? '📹 ' : '📞 ') +
+            roomCallLabel +
+            ' ended (' +
+            formatCallDuration(roomDuration) +
+            ')',
+        });
+      }
+      roomCallConnectedAt = null;
+    }
 
     if (roomSfuSessionId) {
       socket.emit('sfu:leave', { sessionId: roomSfuSessionId });
@@ -1184,6 +1218,18 @@ $(function () {
           from: msg.from,
           url: msg.url,
           filename: msg.url,
+          createdAt: msg.createdAt,
+          initials: initials,
+          extraClass: extraClass,
+        });
+      } else if (msg.type === 'call') {
+        template = $('#call-message-template').html();
+        html = Mustache.render(template, {
+          from: msg.from,
+          callTitle: msg.callTitle,
+          callDuration: msg.durationText,
+          callIcon: msg.callIcon,
+          callStatusClass: msg.callStatusClass,
           createdAt: msg.createdAt,
           initials: initials,
           extraClass: extraClass,
@@ -2001,6 +2047,47 @@ $(function () {
      1-to-1 WebRTC Calling Engine (Audio & Video)
      ========================================================================== */
 
+  function record1to1CallSummary(peerId, peerName, mode, isCaller, wasConnected, durationSec, reason) {
+    if (!peerId) return;
+
+    var isVideo = mode === 'video';
+    var durationText = wasConnected
+      ? formatCallDuration(durationSec)
+      : (reason === 'declined' ? 'Declined' : 'No answer');
+    var callTitle = '';
+    var callIcon = '';
+    var callStatusClass = '';
+
+    if (wasConnected) {
+      callTitle = isVideo ? 'Video Call' : 'Audio Call';
+      callIcon = isVideo ? 'fa-solid fa-video' : 'fa-solid fa-phone';
+      callStatusClass = 'call-status--completed';
+    } else {
+      callTitle = isVideo ? 'Missed Video Call' : 'Missed Audio Call';
+      callIcon = isVideo ? 'fa-solid fa-video-slash' : 'fa-solid fa-phone-slash';
+      callStatusClass = 'call-status--missed';
+    }
+
+    var message_object = {
+      type: 'call',
+      from: isCaller ? currentUserName : (peerName || 'Participant'),
+      callTitle: callTitle,
+      callDuration: durationText,
+      durationText: durationText,
+      callIcon: callIcon,
+      callStatusClass: callStatusClass,
+      createdAt: moment().format('h:mm a'),
+    };
+
+    add_message(message_object, peerId);
+
+    if (getActivePrivateUserId() === peerId) {
+      renderPrivateMessages(peerId);
+    } else {
+      incrementUnreadBadge(peerId);
+    }
+  }
+
   function start1to1Call(targetUserId, mode) {
     if (personalCallActive) {
       alert('You are already in a call.');
@@ -2030,6 +2117,7 @@ $(function () {
     personalCallPeerId = targetUserId;
     personalCallPeerName = peerName;
     personalCallIsCaller = true;
+    personalCallConnectedAt = null;
 
     $('#audio-call, #video-call').prop('disabled', true);
     $('#personal-call-title').text('Calling ' + peerName + '...');
@@ -2049,8 +2137,7 @@ $(function () {
     outgoingRingTimeout = setTimeout(function () {
       if (personalCallActive && personalCallIsCaller && !activeMediaStream) {
         alert(peerName + ' did not answer.');
-        socket.emit('callCancelled', targetUserId);
-        end1to1Call(false);
+        end1to1Call(true, 'no_answer');
       }
     }, 25000);
 
@@ -2114,6 +2201,7 @@ $(function () {
     personalCallPeerId = info.callerId;
     personalCallPeerName = info.callerName;
     personalCallIsCaller = false;
+    personalCallConnectedAt = null;
 
     if (activePrivateUserId !== info.callerId) {
       switchToPersonalChatCanvas(info.callerId, info.callerName);
@@ -2149,10 +2237,20 @@ $(function () {
     incomingCallInfo = null;
     $('#incoming-call-card').addClass('hide-element');
 
+    record1to1CallSummary(info.callerId, info.callerName, info.mode, false, false, 0, 'declined');
+
+    var payload = {
+      userid: info.callerId,
+      mode: info.mode,
+      wasConnected: false,
+      durationSec: 0,
+      reason: 'declined',
+    };
+
     if (info.mode === 'video') {
-      socket.emit('videoCallNotReceived', info.callerId);
+      socket.emit('videoCallNotReceived', payload);
     } else {
-      socket.emit('callNotReceived', info.callerId);
+      socket.emit('callNotReceived', payload);
     }
   }
 
@@ -2181,6 +2279,7 @@ $(function () {
           $('#private-video-stage').removeClass('hide-element');
         }
 
+        personalCallConnectedAt = Date.now();
         startPrivateSfuSession(peerId, mode, mediaStream);
         startPersonalCallTimer();
         $('#personal-call-title').text(
@@ -2194,7 +2293,7 @@ $(function () {
       });
   }
 
-  function end1to1Call(notifyServer) {
+  function end1to1Call(notifyServer, endReason, remotePayload) {
     stopRingtone();
     clearRingTimeout();
     if (outgoingRingTimeout) {
@@ -2203,16 +2302,47 @@ $(function () {
     }
     stopPersonalCallTimer();
 
-    var peerId = personalCallPeerId;
-    var mode = personalCallMode;
+    var peerId =
+      personalCallPeerId ||
+      (remotePayload && (remotePayload.userid || (remotePayload.user && remotePayload.user.id))) ||
+      (incomingCallInfo && incomingCallInfo.callerId);
+    var peerName =
+      personalCallPeerName ||
+      (remotePayload && remotePayload.user && remotePayload.user.name) ||
+      (incomingCallInfo && incomingCallInfo.callerName);
+    var mode =
+      personalCallMode ||
+      (remotePayload && remotePayload.mode) ||
+      (incomingCallInfo && incomingCallInfo.mode) ||
+      'audio';
+    var wasConnected = Boolean(personalCallConnectedAt);
+    var durationSec = 0;
+
+    if (remotePayload && typeof remotePayload.durationSec === 'number') {
+      durationSec = remotePayload.durationSec;
+      wasConnected = Boolean(remotePayload.wasConnected);
+    } else if (personalCallConnectedAt) {
+      durationSec = Math.max(0, Math.floor((Date.now() - personalCallConnectedAt) / 1000));
+    }
+
+    if (peerId) {
+      record1to1CallSummary(peerId, peerName, mode, personalCallIsCaller, wasConnected, durationSec, endReason);
+    }
 
     if (notifyServer && peerId) {
+      var payload = {
+        userid: peerId,
+        mode: mode,
+        wasConnected: wasConnected,
+        durationSec: durationSec,
+        reason: endReason || (wasConnected ? 'completed' : 'cancelled'),
+      };
       if (personalCallIsCaller && !activeMediaStream) {
-        socket.emit('callCancelled', peerId);
+        socket.emit('callCancelled', payload);
       } else if (mode === 'video') {
-        socket.emit('videoCallEnded', peerId);
+        socket.emit('videoCallEnded', payload);
       } else {
-        socket.emit('callEnded', peerId);
+        socket.emit('callEnded', payload);
       }
     }
 
@@ -2222,6 +2352,7 @@ $(function () {
     personalCallPeerId = '';
     personalCallPeerName = '';
     personalCallIsCaller = false;
+    personalCallConnectedAt = null;
     incomingCallInfo = null;
 
     $('#personal-call-stage').addClass('hide-element');
@@ -2306,11 +2437,13 @@ $(function () {
     handleIncomingCall(user, 'video');
   });
 
-  socket.on('callCancelled', function (callerId) {
+  socket.on('callCancelled', function (payload) {
+    var callerId = typeof payload === 'object' && payload !== null ? payload.callerId : payload;
     if (incomingCallInfo && incomingCallInfo.callerId === callerId) {
       clearRingTimeout();
       stopRingtone();
       $('#incoming-call-card').addClass('hide-element');
+      record1to1CallSummary(incomingCallInfo.callerId, incomingCallInfo.callerName, incomingCallInfo.mode, false, false, 0, 'missed');
       incomingCallInfo = null;
     }
   });
@@ -2339,41 +2472,41 @@ $(function () {
     }
   });
 
-  socket.on('callEnded', function () {
-    end1to1Call(false);
+  socket.on('callEnded', function (payload) {
+    end1to1Call(false, 'completed', payload);
   });
 
-  socket.on('videoCallEnded', function () {
-    end1to1Call(false);
+  socket.on('videoCallEnded', function (payload) {
+    end1to1Call(false, 'completed', payload);
   });
 
-  socket.on('callNotReceived', function () {
+  socket.on('callNotReceived', function (payload) {
     if (personalCallActive && personalCallIsCaller) {
       alert((personalCallPeerName || 'User') + ' declined the call.');
-      end1to1Call(false);
+      end1to1Call(false, 'declined', payload);
     }
   });
 
-  socket.on('videoCallNotReceived', function () {
+  socket.on('videoCallNotReceived', function (payload) {
     if (personalCallActive && personalCallIsCaller) {
       alert((personalCallPeerName || 'User') + ' declined the video call.');
-      end1to1Call(false);
+      end1to1Call(false, 'declined', payload);
     }
   });
 
   socket.on('userBusy', function () {
     alert((personalCallPeerName || 'User') + ' is currently busy or on Do Not Disturb.');
-    end1to1Call(false);
+    end1to1Call(false, 'busy');
   });
 
   socket.on('userVideoBusy', function () {
     alert((personalCallPeerName || 'User') + ' is currently busy or on Do Not Disturb.');
-    end1to1Call(false);
+    end1to1Call(false, 'busy');
   });
 
   socket.on('userOffline', function () {
     alert((personalCallPeerName || 'User') + ' is currently offline.');
-    end1to1Call(false);
+    end1to1Call(false, 'offline');
   });
 
   $('#show-people').on('click', function (e) {
