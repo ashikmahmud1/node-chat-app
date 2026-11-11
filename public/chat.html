@@ -11,9 +11,6 @@
 </head>
 
 <body class="chat">
-<audio id="message-received" src="/sound/iphone_notification.mp3" preload="auto"></audio>
-
-
 <!-- Left Sidebar: 50% Top (Groups) & 50% Bottom (Personal Chat) -->
 <aside class="chat__sidebar" id="chat__sidebar">
     <div class="sidebar-brand">
@@ -74,6 +71,41 @@
     </div>
 
     <div class="sidebar-footer">
+        <details class="sound-settings">
+            <summary><i class="fa-solid fa-volume-high" aria-hidden="true"></i> Sound settings</summary>
+            <div class="sound-settings__options">
+                <label><input type="checkbox" id="message-sounds" checked> Message sounds</label>
+                <div class="sound-settings__volume">
+                    <label for="message-volume">Message volume</label>
+                    <output id="message-volume-value" for="message-volume" aria-hidden="true">100%</output>
+                    <input type="range" id="message-volume" min="0" max="100" value="100">
+                </div>
+                <fieldset class="sound-settings__tones" id="message-tones">
+                    <legend>Message tone</legend>
+                </fieldset>
+                <label><input type="checkbox" id="call-sounds" checked> Call sounds</label>
+                <div class="sound-settings__volume">
+                    <label for="call-volume">Call volume</label>
+                    <output id="call-volume-value" for="call-volume" aria-hidden="true">100%</output>
+                    <input type="range" id="call-volume" min="0" max="100" value="100">
+                </div>
+                <fieldset class="sound-settings__tones" id="incoming-ringtones">
+                    <legend>Incoming ringtone</legend>
+                </fieldset>
+                <fieldset class="sound-settings__tones" id="outgoing-ringbacks">
+                    <legend>Outgoing ringback</legend>
+                </fieldset>
+            </div>
+            <p id="sound-preview-status" role="status"></p>
+        </details>
+        <template id="sound-tone-option">
+            <div class="sound-settings__tone-option">
+                <label><input type="radio"><span></span></label>
+                <button type="button" class="sound-settings__preview">
+                    <i class="fa-solid fa-play" aria-hidden="true"></i>
+                </button>
+            </div>
+        </template>
         <a href="/" class="leave-room-btn">
             <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i> Leave group
         </a>
@@ -418,6 +450,7 @@
 <script src="/assets/jquery.min.js"></script>
 <script src="/assets/mustache.min.js"></script>
 <script src="/js/sfu.js"></script>
+<script src="/js/chat-sounds.js"></script>
 <script src="/js/chat.js"></script>
 </body>
 </html>

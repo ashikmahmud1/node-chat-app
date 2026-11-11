@@ -80,7 +80,6 @@ $(function () {
   let directCall = null;
   let activeMediaStream = null;
   let personalCallTimerTimeout = null;
-  let ringToneInterval = null;
   let activeChatMode = 'group';
   let activePrivateUserId = '';
   let activePrivateUserName = '';
@@ -107,17 +106,125 @@ $(function () {
   var unread_counts = Object.create(null);
   var room_users_map = Object.create(null);
 
-  // Audio elements
-  var message_audio = document.getElementById('message-received');
-  var calling_audio = document.getElementById('audioCalling');
+  const calling_audio = document.getElementById('audioCalling');
+  const soundSettingsKey = 'nexus_sound_preferences';
+  const soundSettings = document.querySelector('.sound-settings');
+  const messageSounds = document.getElementById('message-sounds');
+  const callSounds = document.getElementById('call-sounds');
+  const messageVolume = document.getElementById('message-volume');
+  const callVolume = document.getElementById('call-volume');
+  const previewStatus = document.getElementById('sound-preview-status');
+  const tonePickers = [
+    { kind: 'message', preference: 'messageTone', field: document.getElementById('message-tones'), label: 'message tone' },
+    { kind: 'incoming', preference: 'ringtone', field: document.getElementById('incoming-ringtones'), label: 'ringtone' },
+    { kind: 'outgoing', preference: 'ringback', field: document.getElementById('outgoing-ringbacks'), label: 'ringback' },
+  ];
 
-  function playNotificationSound() {
-    if (!message_audio) return;
-    message_audio.currentTime = 0;
-    var playPromise = message_audio.play();
-    if (playPromise && typeof playPromise.catch === 'function') {
-      playPromise.catch(function () {});
+  function readSoundPreferences() {
+    try {
+      return JSON.parse(localStorage.getItem(soundSettingsKey));
+    } catch {
+      return null;
     }
+  }
+
+  const sounds = new ChatSounds(readSoundPreferences());
+  const toneOption = document.getElementById('sound-tone-option');
+  for (const { kind, preference, field, label } of tonePickers) {
+    for (const [tone, pattern] of Object.entries(CHAT_SOUND_PATTERNS[kind])) {
+      const option = toneOption.content.cloneNode(true);
+      const input = option.querySelector('input');
+      input.name = preference;
+      input.value = tone;
+      option.querySelector('span').textContent = pattern.label;
+      const preview = option.querySelector('button');
+      preview.dataset.previewSound = kind;
+      preview.dataset.tone = tone;
+      preview.title = 'Preview ' + pattern.label + ' ' + label;
+      preview.setAttribute('aria-label', preview.title);
+      field.append(option);
+    }
+  }
+
+  function showSoundPreferences() {
+    const preferences = sounds.preferences;
+    messageSounds.checked = preferences.messages;
+    callSounds.checked = preferences.calls;
+    for (const [input, value] of [[messageVolume, preferences.messageVolume], [callVolume, preferences.callVolume]]) {
+      input.value = value;
+      input.setAttribute('aria-valuetext', value + '%');
+      document.getElementById(input.id + '-value').value = value + '%';
+    }
+    for (const { preference, field } of tonePickers) {
+      for (const option of field.querySelectorAll('input')) option.checked = option.value === preferences[preference];
+    }
+  }
+
+  function applySoundPreferences() {
+    const preferences = {
+      messages: messageSounds.checked,
+      calls: callSounds.checked,
+      messageVolume: messageVolume.valueAsNumber,
+      callVolume: callVolume.valueAsNumber,
+    };
+    for (const { preference, field } of tonePickers) {
+      preferences[preference] = field.querySelector('input:checked').value;
+    }
+    sounds.setPreferences(preferences);
+    showSoundPreferences();
+    previewStatus.textContent = '';
+  }
+
+  function saveSoundPreferences() {
+    applySoundPreferences();
+    try {
+      localStorage.setItem(soundSettingsKey, JSON.stringify(sounds.preferences));
+    } catch {
+      // The preference still applies to this tab when storage is unavailable.
+    }
+  }
+
+  showSoundPreferences();
+  soundSettings.addEventListener('change', saveSoundPreferences);
+  for (const slider of [messageVolume, callVolume]) slider.addEventListener('input', applySoundPreferences);
+  for (const button of soundSettings.querySelectorAll('[data-preview-sound]')) {
+    button.addEventListener('click', async () => {
+      const kind = button.dataset.previewSound;
+      previewStatus.textContent = '';
+      if (roomCall || directCall) {
+        previewStatus.textContent = 'Sound previews are available after the call.';
+      } else if (sounds.volumeFor(kind) === 0) {
+        sounds.stopPreview();
+        previewStatus.textContent = kind === 'message' ? 'Raise the message volume to preview.' : 'Raise the call volume to preview.';
+      } else if (await sounds.preview(kind, button.dataset.tone) === false) {
+        previewStatus.textContent = 'Sound playback is unavailable in this tab.';
+      }
+    });
+  }
+  soundSettings.addEventListener('toggle', () => {
+    if (!soundSettings.open) {
+      sounds.stopPreview();
+      previewStatus.textContent = '';
+    }
+  });
+  window.addEventListener('storage', ({ key }) => {
+    if (key !== soundSettingsKey && key !== null) return;
+    sounds.setPreferences(readSoundPreferences());
+    showSoundPreferences();
+  });
+  for (const eventName of ['click', 'keydown']) {
+    document.addEventListener(eventName, (event) => {
+      if (event.isTrusted && (messageSounds.checked || callSounds.checked)) sounds.enable();
+    }, { capture: true });
+  }
+  window.addEventListener('pagehide', () => {
+    sounds.setRinging(null);
+    sounds.stopMessage();
+    sounds.stopPreview();
+  });
+
+  function notifyMessage() {
+    if (!directCall && !roomCall) sounds.notifyMessage();
   }
 
   function getActivePrivateUserId() {
@@ -415,57 +522,6 @@ $(function () {
     $(selector).text([Math.floor(seconds / 60), seconds % 60].map((part) => String(part).padStart(2, '0')).join(':'));
   }
 
-  var audioCtx = null;
-  function getAudioContext() {
-    if (!audioCtx) {
-      var AudioContextClass = window.AudioContext;
-      if (AudioContextClass) {
-        audioCtx = new AudioContextClass();
-      }
-    }
-    return audioCtx;
-  }
-
-  function playRingtone() {
-    stopRingtone();
-    playNotificationSound();
-    try {
-      var ctx = getAudioContext();
-      if (!ctx) return;
-      if (ctx.state === 'suspended') {
-        ctx.resume().catch(function () {});
-      }
-      function chime() {
-        if (!ctx || ctx.state === 'closed') return;
-        var osc1 = ctx.createOscillator();
-        var osc2 = ctx.createOscillator();
-        var gain = ctx.createGain();
-        osc1.type = 'sine';
-        osc2.type = 'sine';
-        osc1.frequency.setValueAtTime(440, ctx.currentTime);
-        osc2.frequency.setValueAtTime(480, ctx.currentTime);
-        gain.gain.setValueAtTime(0.08, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1.2);
-        osc1.connect(gain);
-        osc2.connect(gain);
-        gain.connect(ctx.destination);
-        osc1.start();
-        osc2.start();
-        osc1.stop(ctx.currentTime + 1.2);
-        osc2.stop(ctx.currentTime + 1.2);
-      }
-      chime();
-      ringToneInterval = setInterval(chime, 2500);
-    } catch (e) {}
-  }
-
-  function stopRingtone() {
-    if (ringToneInterval) {
-      clearInterval(ringToneInterval);
-      ringToneInterval = null;
-    }
-  }
-
   function playRemoteMedia(element, stream, button) {
     if (element.srcObject === stream) return;
     element.srcObject = stream;
@@ -571,6 +627,8 @@ $(function () {
     if (directCall) return showError('End your direct call before joining a group call.');
     const call = { sessionId: roomSessionId(), media: null };
     roomCall = call;
+    sounds.stopMessage();
+    sounds.stopPreview();
     $('#join-room-audio-btn, #join-room-video-btn').prop('disabled', true);
     $('#room-call-mode-label').text(currentRoomName + ' · ' + (mode === 'video' ? 'Video call' : 'Audio call'));
     $('#room-call-timer').text('Connecting…');
@@ -706,6 +764,7 @@ $(function () {
     try {
       await request('presence:update', { status });
       currentUserStatus = status;
+      sounds.setQuiet(status === 'dnd');
       $('#current-user-status-dot').attr('class', 'user-avatar-status-dot status-' + status);
     } catch (error) {
       this.value = currentUserStatus;
@@ -939,7 +998,9 @@ $(function () {
       scrollToBottom('#messages');
     } else if (!isHistoryReplay && !isMine) {
       incrementGroupUnreadBadge(currentRoomName);
-      playNotificationSound();
+    }
+    if (!isHistoryReplay && !isMine && (activeChatMode !== 'group' || document.hidden)) {
+      notifyMessage();
     }
   }
 
@@ -1113,6 +1174,7 @@ $(function () {
     currentRoomName = user.room;
     currentUserName = user.name;
     currentUserStatus = user.status;
+    sounds.setQuiet(user.status === 'dnd');
     sessionStorage.setItem('nexus_join', JSON.stringify({ name: user.name, room: user.room }));
     $('#current-user-name').text(user.name);
     $('#current-user-avatar').text(getInitials(user.name)).attr('style', getAvatarStyle(user.name));
@@ -1162,6 +1224,7 @@ $(function () {
     }
     closeDirectCall();
     leaveRoomSfuCall(false);
+    sounds.stopMessage();
   });
 
   socket.on('connect_error', () => {
@@ -1294,7 +1357,7 @@ $(function () {
     } else if (message.authorId !== guestId) {
       incrementUnreadBadge(id);
     }
-    if (message.authorId !== guestId) playNotificationSound();
+    if (message.authorId !== guestId && message.type !== 'call') notifyMessage();
   });
 
   $('#message-input').on('input', function () {
@@ -1389,12 +1452,14 @@ $(function () {
     if (roomCall) return showError('Leave the group call before starting a direct call.');
     const call = { mode, peer, id: null };
     directCall = call;
+    sounds.stopMessage();
+    sounds.stopPreview();
     showDirectStage(call, 'Calling ' + peer.name, 'Ringing…');
     try {
       const { id } = await request('call:start', { peerId: peer.id, mode });
       call.id = id;
       if (directCall !== call) return send('call:end', { id });
-      if (!call.accepted) playRingtone();
+      if (!call.accepted) sounds.setRinging('outgoing');
     } catch (error) {
       if (directCall === call) {
         showError(error.message);
@@ -1410,7 +1475,7 @@ $(function () {
     $('#incoming-caller-name').text(caller.name);
     $('#incoming-call-label').text(mode === 'video' ? 'Incoming video call' : 'Incoming audio call');
     $('#incoming-call-card').removeClass('hide-element');
-    playRingtone();
+    sounds.setRinging('incoming');
   });
 
   async function connectDirectMedia(call) {
@@ -1448,7 +1513,7 @@ $(function () {
   function closeDirectCall() {
     if (!directCall) return;
     directCall = null;
-    stopRingtone();
+    sounds.setRinging(null);
     sfu.close();
     stopTracks(activeMediaStream);
     activeMediaStream = null;
@@ -1475,7 +1540,7 @@ $(function () {
     if (!call?.incoming) return;
     call.incoming = false;
     $('#incoming-call-card').addClass('hide-element');
-    stopRingtone();
+    sounds.setRinging(null);
     openPersonalChatForPeer(call.peer.id);
     showDirectStage(call, 'Call with ' + call.peer.name, 'Connecting…');
     try {
@@ -1493,7 +1558,7 @@ $(function () {
     if (!directCall || directCall.incoming || (directCall.id && directCall.id !== id)) return;
     directCall.id = id;
     directCall.accepted = true;
-    stopRingtone();
+    sounds.setRinging(null);
     showDirectStage(directCall, 'Call with ' + directCall.peer.name, 'Connecting…');
     connectDirectMedia(directCall);
   });

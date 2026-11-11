@@ -686,6 +686,115 @@ button:disabled {
   flex-shrink: 0;
 }
 
+.sound-settings {
+  margin-block-end: 8px;
+  color: #cbd5e1;
+  color-scheme: dark;
+  font-size: 13px;
+}
+
+.sound-settings summary {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.sound-settings summary:hover,
+.sound-settings[open] summary {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.sound-settings summary i {
+  margin-inline: 4px;
+}
+
+.sound-settings__options {
+  padding: 4px 12px 0;
+  max-height: min(420px, 48dvh);
+  overflow-y: auto;
+}
+
+.sound-settings__options > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  cursor: pointer;
+}
+
+.sound-settings__options input {
+  accent-color: #818cf8;
+}
+
+.sound-settings__volume {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 8px;
+  margin-block-end: 6px;
+}
+
+.sound-settings__volume input {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.sound-settings__volume output {
+  font-variant-numeric: tabular-nums;
+}
+
+.sound-settings__tones {
+  min-inline-size: 0;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+}
+
+.sound-settings__tones legend {
+  margin-block-end: 4px;
+  padding: 0;
+}
+
+.sound-settings__tone-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  margin-block-end: 4px;
+  border-radius: var(--radius-sm);
+}
+
+.sound-settings__tone-option:has(input:checked) {
+  background: rgba(129, 140, 248, 0.16);
+}
+
+.sound-settings__tone-option label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 8px;
+  cursor: pointer;
+}
+
+.sound-settings__tone-option input {
+  flex-shrink: 0;
+}
+
+.sound-settings__preview {
+  width: 36px;
+  min-height: 36px;
+  padding: 6px 8px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.sound-settings__preview:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+#sound-preview-status:not(:empty) {
+  margin: 4px 12px 0;
+  font-size: 12px;
+}
+
 .leave-room-btn {
   display: flex;
   align-items: center;
