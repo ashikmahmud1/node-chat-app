@@ -74,29 +74,42 @@
         <details class="sound-settings">
             <summary><i class="fa-solid fa-volume-high" aria-hidden="true"></i> Sound settings</summary>
             <div class="sound-settings__options">
-                <label><input type="checkbox" id="message-sounds" checked> Message sounds</label>
+                <label><input type="checkbox" id="message-sounds" name="messages" checked> Message sounds</label>
                 <div class="sound-settings__volume">
                     <label for="message-volume">Message volume</label>
                     <output id="message-volume-value" for="message-volume" aria-hidden="true">100%</output>
-                    <input type="range" id="message-volume" min="0" max="100" value="100">
+                    <input type="range" id="message-volume" name="messageVolume" min="0" max="100" value="100">
                 </div>
                 <fieldset class="sound-settings__tones" id="message-tones">
                     <legend>Message tone</legend>
                 </fieldset>
-                <label><input type="checkbox" id="call-sounds" checked> Call sounds</label>
-                <div class="sound-settings__volume">
-                    <label for="call-volume">Call volume</label>
-                    <output id="call-volume-value" for="call-volume" aria-hidden="true">100%</output>
-                    <input type="range" id="call-volume" min="0" max="100" value="100">
-                </div>
                 <fieldset class="sound-settings__tones" id="incoming-ringtones">
                     <legend>Incoming ringtone</legend>
+                    <label class="sound-settings__switch">
+                        Play incoming ringtone
+                        <input type="checkbox" role="switch" id="incoming-sounds" name="incomingSounds" checked>
+                    </label>
+                    <div class="sound-settings__volume">
+                        <label for="incoming-volume">Incoming ringtone volume</label>
+                        <output id="incoming-volume-value" for="incoming-volume" aria-hidden="true">100%</output>
+                        <input type="range" id="incoming-volume" name="incomingVolume" min="0" max="100" value="100">
+                    </div>
                 </fieldset>
                 <fieldset class="sound-settings__tones" id="outgoing-ringbacks">
                     <legend>Outgoing ringback</legend>
+                    <label class="sound-settings__switch">
+                        Play outgoing ringback
+                        <input type="checkbox" role="switch" id="outgoing-sounds" name="outgoingSounds" checked>
+                    </label>
+                    <div class="sound-settings__volume">
+                        <label for="outgoing-volume">Outgoing ringback volume</label>
+                        <output id="outgoing-volume-value" for="outgoing-volume" aria-hidden="true">100%</output>
+                        <input type="range" id="outgoing-volume" name="outgoingVolume" min="0" max="100" value="100">
+                    </div>
                 </fieldset>
             </div>
-            <p id="sound-preview-status" role="status"></p>
+            <button type="button" id="reset-sound-settings" class="sound-settings__reset">Reset to defaults</button>
+            <p id="sound-settings-status" role="status"></p>
         </details>
         <template id="sound-tone-option">
             <div class="sound-settings__tone-option">

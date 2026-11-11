@@ -93,17 +93,29 @@ const CHAT_SOUND_PATTERNS = {
 };
 
 const CHAT_MESSAGE_SOUND_INTERVAL = 1400;
+const CHAT_SOUND_VOLUME_KEYS = {
+  message: 'messageVolume',
+  incoming: 'incomingVolume',
+  outgoing: 'outgoingVolume',
+};
 
 function normalizeSoundPreferences(preferences) {
-  const volume = (value) => Number.isFinite(value) ? Math.min(100, Math.max(0, Math.round(value))) : 100;
+  const enabled = (value, defaultValue = true) => typeof value === 'boolean' ? value : defaultValue;
+  const volume = (value, defaultVolume = 100) => (
+    Number.isFinite(value) ? Math.min(100, Math.max(0, Math.round(value))) : defaultVolume
+  );
   const tone = (kind, value, defaultTone) => (
     typeof value === 'string' && Object.hasOwn(CHAT_SOUND_PATTERNS[kind], value) ? value : defaultTone
   );
+  const previousCallVolume = volume(preferences?.callVolume);
+  const previousCallSounds = enabled(preferences?.calls);
   return {
-    messages: preferences?.messages !== false,
-    calls: preferences?.calls !== false,
+    messages: enabled(preferences?.messages),
+    incomingSounds: enabled(preferences?.incomingSounds, previousCallSounds),
+    outgoingSounds: enabled(preferences?.outgoingSounds, previousCallSounds),
     messageVolume: volume(preferences?.messageVolume),
-    callVolume: volume(preferences?.callVolume),
+    incomingVolume: volume(preferences?.incomingVolume, previousCallVolume),
+    outgoingVolume: volume(preferences?.outgoingVolume, previousCallVolume),
     messageTone: tone('message', preferences?.messageTone, 'chime'),
     ringtone: tone('incoming', preferences?.ringtone, 'pulse'),
     ringback: tone('outgoing', preferences?.ringback, 'classic'),
@@ -149,15 +161,20 @@ class ChatSounds {
     this.syncRing();
     for (const playback of [this.messagePlayback, this.ringPlayback, this.previewPlayback]) {
       if (!playback) continue;
-      const setting = playback.kind === 'message' ? 'messageVolume' : 'callVolume';
+      const setting = CHAT_SOUND_VOLUME_KEYS[playback.kind];
       if (preferences[setting] !== previous[setting]) {
         playback.gain.gain.setTargetAtTime(this.volumeFor(playback.kind), this.context.currentTime, 0.015);
       }
     }
   }
 
+  resetPreferences() {
+    this.stopPreview();
+    this.setPreferences();
+  }
+
   volumeFor(kind) {
-    return (kind === 'message' ? this.preferences.messageVolume : this.preferences.callVolume) / 100;
+    return this.preferences[CHAT_SOUND_VOLUME_KEYS[kind]] / 100;
   }
 
   selectedTone(kind) {
@@ -216,7 +233,9 @@ class ChatSounds {
   }
 
   syncRing() {
-    if (!this.ring || !this.preferences.calls || !this.volumeFor(this.ring) || (this.quiet && this.ring === 'incoming')) {
+    const incoming = this.ring === 'incoming';
+    const enabled = incoming ? this.preferences.incomingSounds : this.preferences.outgoingSounds;
+    if (!this.ring || !enabled || !this.volumeFor(this.ring) || (incoming && this.quiet)) {
       this.stop('ringPlayback');
       return;
     }

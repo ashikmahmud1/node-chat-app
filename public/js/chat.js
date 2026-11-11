@@ -109,11 +109,9 @@ $(function () {
   const calling_audio = document.getElementById('audioCalling');
   const soundSettingsKey = 'nexus_sound_preferences';
   const soundSettings = document.querySelector('.sound-settings');
-  const messageSounds = document.getElementById('message-sounds');
-  const callSounds = document.getElementById('call-sounds');
-  const messageVolume = document.getElementById('message-volume');
-  const callVolume = document.getElementById('call-volume');
-  const previewStatus = document.getElementById('sound-preview-status');
+  const soundToggles = Array.from(soundSettings.querySelectorAll('input[type="checkbox"]'));
+  const volumeSliders = soundSettings.querySelectorAll('input[type="range"]');
+  const soundStatus = document.getElementById('sound-settings-status');
   const tonePickers = [
     { kind: 'message', preference: 'messageTone', field: document.getElementById('message-tones'), label: 'message tone' },
     { kind: 'incoming', preference: 'ringtone', field: document.getElementById('incoming-ringtones'), label: 'ringtone' },
@@ -148,73 +146,81 @@ $(function () {
 
   function showSoundPreferences() {
     const preferences = sounds.preferences;
-    messageSounds.checked = preferences.messages;
-    callSounds.checked = preferences.calls;
-    for (const [input, value] of [[messageVolume, preferences.messageVolume], [callVolume, preferences.callVolume]]) {
+    for (const input of soundToggles) input.checked = preferences[input.name];
+    for (const input of volumeSliders) {
+      const value = preferences[input.name];
       input.value = value;
       input.setAttribute('aria-valuetext', value + '%');
       document.getElementById(input.id + '-value').value = value + '%';
     }
     for (const { preference, field } of tonePickers) {
-      for (const option of field.querySelectorAll('input')) option.checked = option.value === preferences[preference];
+      for (const option of field.querySelectorAll('input[type="radio"]')) option.checked = option.value === preferences[preference];
     }
   }
 
   function applySoundPreferences() {
-    const preferences = {
-      messages: messageSounds.checked,
-      calls: callSounds.checked,
-      messageVolume: messageVolume.valueAsNumber,
-      callVolume: callVolume.valueAsNumber,
-    };
+    const preferences = {};
+    for (const input of soundToggles) preferences[input.name] = input.checked;
+    for (const input of volumeSliders) preferences[input.name] = input.valueAsNumber;
     for (const { preference, field } of tonePickers) {
-      preferences[preference] = field.querySelector('input:checked').value;
+      preferences[preference] = field.querySelector('input[type="radio"]:checked').value;
     }
     sounds.setPreferences(preferences);
     showSoundPreferences();
-    previewStatus.textContent = '';
+    soundStatus.textContent = '';
   }
 
   function saveSoundPreferences() {
-    applySoundPreferences();
     try {
       localStorage.setItem(soundSettingsKey, JSON.stringify(sounds.preferences));
+      return true;
     } catch {
-      // The preference still applies to this tab when storage is unavailable.
+      return false;
     }
   }
 
   showSoundPreferences();
-  soundSettings.addEventListener('change', saveSoundPreferences);
-  for (const slider of [messageVolume, callVolume]) slider.addEventListener('input', applySoundPreferences);
+  soundSettings.addEventListener('change', () => {
+    applySoundPreferences();
+    saveSoundPreferences();
+  });
+  document.getElementById('reset-sound-settings').addEventListener('click', (event) => {
+    sounds.resetPreferences();
+    if (event.isTrusted) sounds.enable();
+    showSoundPreferences();
+    soundStatus.textContent = saveSoundPreferences() ? 'Sound settings reset to defaults.' : 'Sound settings reset for this tab.';
+  });
+  for (const slider of volumeSliders) slider.addEventListener('input', applySoundPreferences);
   for (const button of soundSettings.querySelectorAll('[data-preview-sound]')) {
     button.addEventListener('click', async () => {
       const kind = button.dataset.previewSound;
-      previewStatus.textContent = '';
+      soundStatus.textContent = '';
       if (roomCall || directCall) {
-        previewStatus.textContent = 'Sound previews are available after the call.';
+        soundStatus.textContent = 'Sound previews are available after the call.';
       } else if (sounds.volumeFor(kind) === 0) {
         sounds.stopPreview();
-        previewStatus.textContent = kind === 'message' ? 'Raise the message volume to preview.' : 'Raise the call volume to preview.';
+        const volumeLabel = document.getElementById(kind + '-volume').labels[0].textContent;
+        soundStatus.textContent = 'Raise the ' + volumeLabel.toLowerCase() + ' to preview.';
       } else if (await sounds.preview(kind, button.dataset.tone) === false) {
-        previewStatus.textContent = 'Sound playback is unavailable in this tab.';
+        soundStatus.textContent = 'Sound playback is unavailable in this tab.';
       }
     });
   }
   soundSettings.addEventListener('toggle', () => {
     if (!soundSettings.open) {
       sounds.stopPreview();
-      previewStatus.textContent = '';
+      soundStatus.textContent = '';
     }
   });
   window.addEventListener('storage', ({ key }) => {
     if (key !== soundSettingsKey && key !== null) return;
     sounds.setPreferences(readSoundPreferences());
     showSoundPreferences();
+    soundStatus.textContent = '';
   });
   for (const eventName of ['click', 'keydown']) {
     document.addEventListener(eventName, (event) => {
-      if (event.isTrusted && (messageSounds.checked || callSounds.checked)) sounds.enable();
+      if (event.isTrusted && soundToggles.some((input) => input.checked)) sounds.enable();
     }, { capture: true });
   }
   window.addEventListener('pagehide', () => {
