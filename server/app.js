@@ -12,6 +12,19 @@ const createApp = (usersInstance = null, sfuServiceInstance = null) => {
 
   app.disable('x-powered-by');
 
+  // Completely bypass Express for Socket.IO polling and engine requests so Engine.IO has exclusive control
+  app.use((req, res, next) => {
+    const url = req.url || '';
+    if (
+      url.startsWith('/socket.io') &&
+      !url.startsWith('/socket.io/socket.io.js') &&
+      !url.startsWith('/socket.io/socket.io.min.js')
+    ) {
+      return;
+    }
+    next();
+  });
+
   // Enterprise security & request correlation headers
   app.use((req, res, next) => {
     if (res.headersSent) {

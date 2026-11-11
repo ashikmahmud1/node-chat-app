@@ -10,7 +10,9 @@ $(function () {
     return;
   }
 
-  var socket = io();
+  var socket = io({
+    transports: ['websocket', 'polling'],
+  });
 
   // Helper: Get user initials (e.g. "Ashik Rahman" -> "AR", "Ashik" -> "AS")
   function getInitials(name) {
@@ -55,16 +57,18 @@ $(function () {
     }
   }
 
-  // Call State
-  var calling = false;
-  var caller_id = '';
-  var video_caller_id = '';
-  var callTimerTimeout = null;
+  // 1-to-1 Call State
+  var personalCallActive = false;
+  var personalCallMode = 'audio';
+  var personalCallPeerId = '';
+  var personalCallPeerName = '';
+  var personalCallIsCaller = false;
+  var personalCallTimerTimeout = null;
   var ringTimeout = null;
-  var videoRingTimeout = null;
-  var audio_message = null;
+  var outgoingRingTimeout = null;
+  var incomingCallInfo = null; // { callerId, callerName, mode }
+  var ringToneInterval = null;
   var activeMediaStream = null;
-  var activeMediaRecorder = null;
 
   // Active Canvas State ('group' or 'personal')
   var activeChatMode = 'group';
@@ -321,6 +325,13 @@ $(function () {
     $('#quick-group-form').trigger('submit');
   });
 
+  $('#quick-group-input').on('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      $('#quick-group-form').trigger('submit');
+    }
+  });
+
   $('#quick-group-input').on('input', function () {
     renderGroupsSidebar();
   });
@@ -433,13 +444,6 @@ $(function () {
     }
   }
 
-  function clearVideoRingTimeout() {
-    if (videoRingTimeout) {
-      clearTimeout(videoRingTimeout);
-      videoRingTimeout = null;
-    }
-  }
-
   function formatNextSecond(currentText) {
     var ss = (currentText || '00:00').split(':');
     var dt = new Date();
@@ -453,17 +457,74 @@ $(function () {
     return ts[1] + ':' + ts[2];
   }
 
-  function update() {
-    if (!calling) return;
-    var $worked = $('#show-time');
-    $worked.html(formatNextSecond($worked.html()));
-    callTimerTimeout = setTimeout(update, 1000);
+  function updatePersonalCallTimer() {
+    if (!personalCallActive) return;
+    var $timer = $('#personal-call-timer');
+    $timer.html(formatNextSecond($timer.html()));
+    personalCallTimerTimeout = setTimeout(updatePersonalCallTimer, 1000);
   }
 
-  function stopCallTimer() {
-    if (callTimerTimeout) {
-      clearTimeout(callTimerTimeout);
-      callTimerTimeout = null;
+  function startPersonalCallTimer() {
+    stopPersonalCallTimer();
+    $('#personal-call-timer').text('00:00');
+    personalCallTimerTimeout = setTimeout(updatePersonalCallTimer, 1000);
+  }
+
+  function stopPersonalCallTimer() {
+    if (personalCallTimerTimeout) {
+      clearTimeout(personalCallTimerTimeout);
+      personalCallTimerTimeout = null;
+    }
+  }
+
+  var audioCtx = null;
+  function getAudioContext() {
+    if (!audioCtx) {
+      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioContextClass) {
+        audioCtx = new AudioContextClass();
+      }
+    }
+    return audioCtx;
+  }
+
+  function playRingtone() {
+    stopRingtone();
+    playNotificationSound();
+    try {
+      var ctx = getAudioContext();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(function () {});
+      }
+      function chime() {
+        if (!ctx || ctx.state === 'closed') return;
+        var osc1 = ctx.createOscillator();
+        var osc2 = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc1.type = 'sine';
+        osc2.type = 'sine';
+        osc1.frequency.setValueAtTime(440, ctx.currentTime);
+        osc2.frequency.setValueAtTime(480, ctx.currentTime);
+        gain.gain.setValueAtTime(0.08, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1.2);
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(ctx.destination);
+        osc1.start();
+        osc2.start();
+        osc1.stop(ctx.currentTime + 1.2);
+        osc2.stop(ctx.currentTime + 1.2);
+      }
+      chime();
+      ringToneInterval = setInterval(chime, 2500);
+    } catch (e) {}
+  }
+
+  function stopRingtone() {
+    if (ringToneInterval) {
+      clearInterval(ringToneInterval);
+      ringToneInterval = null;
     }
   }
 
@@ -497,18 +558,6 @@ $(function () {
   function stopMediaStream() {
     closePrivateSfuConnection();
 
-    if (audio_message) {
-      clearInterval(audio_message);
-      audio_message = null;
-    }
-    if (activeMediaRecorder && activeMediaRecorder.state !== 'inactive') {
-      try {
-        activeMediaRecorder.onstop = null;
-        activeMediaRecorder.stop();
-      } catch (e) {}
-    }
-    activeMediaRecorder = null;
-
     if (activeMediaStream) {
       activeMediaStream.getTracks().forEach(function (track) {
         track.stop();
@@ -519,12 +568,12 @@ $(function () {
     var selfVideo = document.getElementById('self-video');
     if (selfVideo) {
       selfVideo.srcObject = null;
-      $('#self-video').addClass('self-video');
     }
     var otherVideo = document.getElementById('other-video');
     if (otherVideo) {
       otherVideo.srcObject = null;
     }
+    $('#private-video-stage').addClass('hide-element');
   }
 
   /* ==========================================================================
@@ -560,10 +609,16 @@ $(function () {
         var otherVideo = document.getElementById('other-video');
         if (otherVideo) {
           otherVideo.srcObject = remoteStream;
-          $('#other-video').removeClass('other-video');
+          $('#other-video-name').text(personalCallPeerName || 'Participant');
+          $('#private-video-stage').removeClass('hide-element');
         }
-      } else if (calling_audio) {
+      }
+      if (calling_audio) {
         calling_audio.srcObject = remoteStream;
+        var playPromise = calling_audio.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+          playPromise.catch(function () {});
+        }
       }
     };
 
@@ -1068,7 +1123,7 @@ $(function () {
       $item.find('.message__avatar').attr('style', avatarStyle);
       $list.append($item);
     }
-    if (!calling) {
+    if (!personalCallActive) {
       $list.scrollTop($list.prop('scrollHeight') || 0);
     }
     updateEmptyStates();
@@ -1076,23 +1131,7 @@ $(function () {
 
   $('#alert-box').on('click', function (e) {
     e.preventDefault();
-    var pendingCallerId = caller_id || video_caller_id;
-    if (!pendingCallerId || !room_users_map[pendingCallerId]) return;
-    var callerUser = room_users_map[pendingCallerId];
-    switchToPersonalChatCanvas(callerUser.id, callerUser.name);
     $('#alert-box').addClass('alert-hide');
-
-    if (caller_id === pendingCallerId) {
-      document.getElementById('audio-calling-text').innerHTML = callerUser.name + ' Calling...';
-      $('#call-receive-section').removeClass('accept-reject-call');
-      $('#audio-call').prop('disabled', true);
-      $('#video-call').prop('disabled', true);
-    } else if (video_caller_id === pendingCallerId) {
-      document.getElementById('video-calling-text').innerHTML = callerUser.name + ' Video Calling...';
-      $('#video-call-receive-section').removeClass('accept-reject-video-call');
-      $('#audio-call').prop('disabled', true);
-      $('#video-call').prop('disabled', true);
-    }
   });
 
   // Reactions & message toolbar builder
@@ -1534,18 +1573,6 @@ $(function () {
     var targetName = targetUser ? targetUser.name : 'Personal Chat';
 
     switchToPersonalChatCanvas(id, targetName);
-
-    if (caller_id === id) {
-      document.getElementById('audio-calling-text').innerHTML = targetName + ' Calling...';
-      $('#call-receive-section').removeClass('accept-reject-call');
-      $('#alert-box').addClass('alert-hide');
-    }
-    if (video_caller_id === id) {
-      document.getElementById('video-calling-text').innerHTML = targetName + ' Video Calling...';
-      $('#video-call-receive-section').removeClass('accept-reject-video-call');
-      $('#alert-box').addClass('alert-hide');
-    }
-
     socket.emit('privateMessageWindow', { id: id });
   }
 
@@ -1625,25 +1652,18 @@ $(function () {
       }
     });
 
-    if (caller_id && !room_users_map[caller_id]) {
+    if (incomingCallInfo && !room_users_map[incomingCallInfo.callerId]) {
       clearRingTimeout();
-      caller_id = '';
-      $('#call-receive-section').addClass('accept-reject-call');
-      $('#alert-box').addClass('alert-hide');
+      stopRingtone();
+      $('#incoming-call-card').addClass('hide-element');
+      incomingCallInfo = null;
     }
-    if (video_caller_id && !room_users_map[video_caller_id]) {
-      clearVideoRingTimeout();
-      video_caller_id = '';
-      $('#video-call-receive-section').addClass('accept-reject-video-call');
-      $('#alert-box').addClass('alert-hide');
+    if (personalCallActive && personalCallPeerId && !room_users_map[personalCallPeerId]) {
+      end1to1Call(false);
+      alert('The other user has left the workspace.');
     }
 
     if (activePrivateId && !userfound) {
-      if (calling) {
-        end_call();
-        end_video_call();
-        calling = false;
-      }
       switchToGroupChatCanvas();
     }
 
@@ -1815,10 +1835,11 @@ $(function () {
           longitude: position.coords.longitude,
         });
       },
-      function () {
+      function (err) {
         $btn.prop('disabled', false).html('<i class="fa-solid fa-location-dot"></i> <span>Location</span>');
-        alert('Unable to fetch location.');
-      }
+        alert('Unable to fetch location: ' + (err && err.message ? err.message : 'Please check location permissions.'));
+      },
+      { timeout: 10000, maximumAge: 60000 }
     );
   });
 
@@ -1842,10 +1863,11 @@ $(function () {
           userid: targetId,
         });
       },
-      function () {
+      function (err) {
         $btn.prop('disabled', false).html('<i class="fa-solid fa-location-dot"></i> <span>Location</span>');
-        alert('Unable to fetch location.');
-      }
+        alert('Unable to fetch location: ' + (err && err.message ? err.message : 'Please check location permissions.'));
+      },
+      { timeout: 10000, maximumAge: 60000 }
     );
   });
 
@@ -1886,156 +1908,383 @@ $(function () {
     }
   });
 
-  socket.on('onAudioCall', function (arrayBuffer) {
-    var blob = new Blob([arrayBuffer], { type: 'audio/ogg; codecs=opus' });
-    calling_audio.src = window.URL.createObjectURL(blob);
-  });
+  /* ==========================================================================
+     1-to-1 WebRTC Calling Engine (Audio & Video)
+     ========================================================================== */
 
-  $('#accept-call').on('click', function (e) {
-    e.preventDefault();
-    clearRingTimeout();
-    var userid = caller_id || getActivePrivateUserId();
-    socket.emit('callReceived', userid);
-    $('#call-receive-section').addClass('accept-reject-call');
-    $('#call-section').removeClass('end-call');
+  function start1to1Call(targetUserId, mode) {
+    if (personalCallActive) {
+      alert('You are already in a call.');
+      return;
+    }
+    if (roomCallActive) {
+      alert('Please leave the room conference before starting a 1-to-1 call.');
+      return;
+    }
+    if (!targetUserId) {
+      targetUserId = getActivePrivateUserId();
+    }
+    if (!targetUserId) {
+      alert('Please select a user to call.');
+      return;
+    }
+    var peerUser = room_users_map[targetUserId];
+    var peerName = (peerUser && peerUser.name) || activePrivateUserName || 'Participant';
 
-    $('#audio-call').prop('disabled', true);
-    $('#video-call').prop('disabled', true);
+    if (peerUser && peerUser.status === 'dnd') {
+      alert(peerName + ' is in Do Not Disturb mode.');
+      return;
+    }
 
-    $('#alert-box').addClass('alert-hide');
-    calling = true;
-    document.getElementById('audio-call-start').click();
+    personalCallActive = true;
+    personalCallMode = mode;
+    personalCallPeerId = targetUserId;
+    personalCallPeerName = peerName;
+    personalCallIsCaller = true;
 
-    $('#show-time').removeClass('hide-time').text('00:00');
-    $('#show-call-text').addClass('hide-time');
-    stopCallTimer();
-    callTimerTimeout = setTimeout(update, 1000);
-  });
+    $('#audio-call, #video-call').prop('disabled', true);
+    $('#personal-call-title').text('Calling ' + peerName + '...');
+    $('#personal-call-timer').text('Ringing...');
+    $('#personal-call-stage').removeClass('hide-element');
+    if (mode === 'video') {
+      $('#personal-toggle-cam').removeClass('hide-element');
+    } else {
+      $('#personal-toggle-cam').addClass('hide-element');
+    }
+    $('#personal-toggle-mic').removeClass('muted-state');
+    $('#personal-toggle-cam').removeClass('muted-state');
 
-  $('#reject-call').on('click', function (e) {
-    e.preventDefault();
-    var userid = caller_id || getActivePrivateUserId();
-    reject_call(userid);
-  });
+    playRingtone();
 
-  function hide_receive_section(userid) {
+    if (outgoingRingTimeout) clearTimeout(outgoingRingTimeout);
+    outgoingRingTimeout = setTimeout(function () {
+      if (personalCallActive && personalCallIsCaller && !activeMediaStream) {
+        alert(peerName + ' did not answer.');
+        socket.emit('callCancelled', targetUserId);
+        end1to1Call(false);
+      }
+    }, 25000);
+
+    if (mode === 'video') {
+      socket.emit('initializeVideoCall', targetUserId);
+    } else {
+      socket.emit('initializeAudioCall', targetUserId);
+    }
+  }
+
+  function handleIncomingCall(user, mode) {
+    if (!user || !user.id) return;
+
+    if (personalCallActive || roomCallActive || currentUserStatus === 'dnd') {
+      if (mode === 'video') {
+        socket.emit('userVideoBusy', user.id);
+      } else {
+        socket.emit('userBusy', user.id);
+      }
+      return;
+    }
+
+    incomingCallInfo = {
+      callerId: user.id,
+      callerName: user.name,
+      mode: mode,
+    };
+
+    $('#incoming-caller-avatar')
+      .text(getInitials(user.name))
+      .attr('style', getAvatarStyle(user.name));
+    $('#incoming-caller-name').text(user.name);
+    $('#incoming-call-label').html(
+      '<i class="fa-solid fa-' + (mode === 'video' ? 'video' : 'phone') + ' fa-shake"></i> Incoming ' +
+        (mode === 'video' ? 'Video' : 'Audio') +
+        ' Call...'
+    );
+
+    $('#incoming-call-card').removeClass('hide-element');
+    playRingtone();
+
     clearRingTimeout();
     ringTimeout = setTimeout(function () {
-      if (!calling && caller_id === userid) {
-        reject_call(userid);
+      if (incomingCallInfo && incomingCallInfo.callerId === user.id) {
+        rejectIncomingCall();
       }
     }, 18000);
   }
 
-  function reject_call(userid) {
+  function acceptIncomingCall() {
+    if (!incomingCallInfo) return;
     clearRingTimeout();
-    if (userid) {
-      socket.emit('callNotReceived', userid);
+    stopRingtone();
+
+    var info = incomingCallInfo;
+    incomingCallInfo = null;
+    $('#incoming-call-card').addClass('hide-element');
+
+    personalCallActive = true;
+    personalCallMode = info.mode;
+    personalCallPeerId = info.callerId;
+    personalCallPeerName = info.callerName;
+    personalCallIsCaller = false;
+
+    if (activePrivateUserId !== info.callerId) {
+      switchToPersonalChatCanvas(info.callerId, info.callerName);
     }
-    $('#call-receive-section').addClass('accept-reject-call');
-    $('#audio-call').prop('disabled', false);
-    $('#video-call').prop('disabled', false);
-    $('#alert-box').addClass('alert-hide');
-    caller_id = '';
+
+    $('#audio-call, #video-call').prop('disabled', true);
+    $('#personal-call-title').text('In Call: ' + info.callerName);
+    $('#personal-call-timer').text('Connecting...');
+    $('#personal-call-stage').removeClass('hide-element');
+    if (info.mode === 'video') {
+      $('#personal-toggle-cam').removeClass('hide-element');
+    } else {
+      $('#personal-toggle-cam').addClass('hide-element');
+    }
+    $('#personal-toggle-mic').removeClass('muted-state');
+    $('#personal-toggle-cam').removeClass('muted-state');
+
+    if (info.mode === 'video') {
+      socket.emit('videoCallReceived', info.callerId);
+    } else {
+      socket.emit('callReceived', info.callerId);
+    }
+
+    acquireLocalMediaAndStartSession(info.callerId, info.mode);
   }
 
-  $('#audio-call').on('click', function (e) {
-    e.preventDefault();
-    var userid = getActivePrivateUserId();
-    if (!userid) return;
-    socket.emit('initializeAudioCall', userid);
-    $('#call-section').removeClass('end-call');
-    $('#audio-call').prop('disabled', true);
-    $('#video-call').prop('disabled', true);
-    calling = true;
-  });
+  function rejectIncomingCall() {
+    if (!incomingCallInfo) return;
+    clearRingTimeout();
+    stopRingtone();
 
-  socket.on('incomingCall', function (user) {
-    if (!user) return;
-    if (!calling) {
-      caller_id = user.id;
-      document.getElementById('audio-calling-text').innerHTML = user.name + ' Calling...';
-      playNotificationSound();
+    var info = incomingCallInfo;
+    incomingCallInfo = null;
+    $('#incoming-call-card').addClass('hide-element');
 
-      var activeId = getActivePrivateUserId();
-      if (activeId === user.id) {
-        $('#call-receive-section').removeClass('accept-reject-call');
-        $('#audio-call').prop('disabled', true);
-        $('#video-call').prop('disabled', true);
-      } else {
-        $('#alert-box').removeClass('alert-hide');
-        document.getElementsByClassName('alert-text')[0].innerHTML =
-          user.name + ' Calling... (Click to answer)';
-      }
-      hide_receive_section(user.id);
+    if (info.mode === 'video') {
+      socket.emit('videoCallNotReceived', info.callerId);
     } else {
-      socket.emit('userBusy', user.id);
+      socket.emit('callNotReceived', info.callerId);
     }
-  });
+  }
 
-  socket.on('userBusy', function () {
-    end_call();
-    alert('User is currently busy or on Do Not Disturb.');
-  });
+  function acquireLocalMediaAndStartSession(peerId, mode) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('Your browser does not support media capture for WebRTC calls.');
+      end1to1Call(true);
+      return;
+    }
 
-  $('#audio-call-start').on('click', function (e) {
-    e.preventDefault();
-    var constraints = { audio: true };
-    var userid = getActivePrivateUserId() || caller_id;
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    var constraints = {
+      audio: true,
+      video: mode === 'video',
+    };
 
     navigator.mediaDevices
       .getUserMedia(constraints)
       .then(function (mediaStream) {
         activeMediaStream = mediaStream;
-        startPrivateSfuSession(userid, 'audio', mediaStream);
+
+        if (mode === 'video') {
+          var selfVideo = document.getElementById('self-video');
+          if (selfVideo) {
+            selfVideo.srcObject = mediaStream;
+          }
+          $('#private-video-stage').removeClass('hide-element');
+        }
+
+        startPrivateSfuSession(peerId, mode, mediaStream);
+        startPersonalCallTimer();
+        $('#personal-call-title').text(
+          (mode === 'video' ? 'Video' : 'Audio') + ' Call: ' + personalCallPeerName
+        );
       })
       .catch(function (err) {
-        console.error('Microphone error:', err);
-        end_call();
+        console.error('Media acquisition error:', err);
+        alert('Could not access microphone/camera: ' + (err && err.message ? err.message : 'Permission denied.'));
+        end1to1Call(true);
       });
+  }
+
+  function end1to1Call(notifyServer) {
+    stopRingtone();
+    clearRingTimeout();
+    if (outgoingRingTimeout) {
+      clearTimeout(outgoingRingTimeout);
+      outgoingRingTimeout = null;
+    }
+    stopPersonalCallTimer();
+
+    var peerId = personalCallPeerId;
+    var mode = personalCallMode;
+
+    if (notifyServer && peerId) {
+      if (personalCallIsCaller && !activeMediaStream) {
+        socket.emit('callCancelled', peerId);
+      } else if (mode === 'video') {
+        socket.emit('videoCallEnded', peerId);
+      } else {
+        socket.emit('callEnded', peerId);
+      }
+    }
+
+    stopMediaStream();
+
+    personalCallActive = false;
+    personalCallPeerId = '';
+    personalCallPeerName = '';
+    personalCallIsCaller = false;
+    incomingCallInfo = null;
+
+    $('#personal-call-stage').addClass('hide-element');
+    $('#private-video-stage').addClass('hide-element');
+    $('#incoming-call-card').addClass('hide-element');
+    $('#audio-call, #video-call').prop('disabled', false);
+    $('#personal-call-timer').text('00:00');
+  }
+
+  // Personal Call Mic & Cam Controls
+  $('#personal-toggle-mic').on('click', function (e) {
+    e.preventDefault();
+    if (!activeMediaStream) return;
+    var audioTracks = activeMediaStream.getAudioTracks();
+    if (!audioTracks.length) return;
+    var enabled = !audioTracks[0].enabled;
+    audioTracks.forEach(function (t) {
+      t.enabled = enabled;
+    });
+    var $btn = $(this);
+    $btn.toggleClass('muted-state', !enabled);
+    $btn.find('i').attr('class', enabled ? 'fa-solid fa-microphone' : 'fa-solid fa-microphone-slash');
+    if (privateSfuSessionId) {
+      socket.emit('sfu:media-state', {
+        sessionId: privateSfuSessionId,
+        audioEnabled: enabled,
+      });
+    }
+  });
+
+  $('#personal-toggle-cam').on('click', function (e) {
+    e.preventDefault();
+    if (!activeMediaStream) return;
+    var videoTracks = activeMediaStream.getVideoTracks();
+    if (!videoTracks.length) return;
+    var enabled = !videoTracks[0].enabled;
+    videoTracks.forEach(function (t) {
+      t.enabled = enabled;
+    });
+    var $btn = $(this);
+    $btn.toggleClass('muted-state', !enabled);
+    $btn.find('i').attr('class', enabled ? 'fa-solid fa-video' : 'fa-solid fa-video-slash');
+    if (privateSfuSessionId) {
+      socket.emit('sfu:media-state', {
+        sessionId: privateSfuSessionId,
+        videoEnabled: enabled,
+      });
+    }
   });
 
   $('#end-call').on('click', function (e) {
     e.preventDefault();
-    var userid = getActivePrivateUserId() || caller_id;
-    end_call();
-    socket.emit('callEnded', userid);
-    $('#show-time').addClass('hide-time');
-    $('#show-call-text').removeClass('hide-time');
+    end1to1Call(true);
   });
 
-  socket.on('callEnded', function () {
-    end_call();
-    $('#show-time').addClass('hide-time');
-    $('#show-call-text').removeClass('hide-time');
+  $('#accept-call').on('click', function (e) {
+    e.preventDefault();
+    acceptIncomingCall();
   });
 
-  function end_call() {
-    calling = false;
-    caller_id = '';
-    clearRingTimeout();
-    stopCallTimer();
-    stopMediaStream();
+  $('#reject-call').on('click', function (e) {
+    e.preventDefault();
+    rejectIncomingCall();
+  });
 
-    $('#audio-call').prop('disabled', false);
-    $('#video-call').prop('disabled', false);
-    $('#call-section').addClass('end-call');
-    $('#call-receive-section').addClass('accept-reject-call');
-    $('#alert-box').addClass('alert-hide');
-  }
+  $('#audio-call').on('click', function (e) {
+    e.preventDefault();
+    start1to1Call(getActivePrivateUserId(), 'audio');
+  });
 
-  socket.on('callNotReceived', function () {
-    end_call();
+  $('#video-call').on('click', function (e) {
+    e.preventDefault();
+    start1to1Call(getActivePrivateUserId(), 'video');
+  });
+
+  // Incoming Call & Call Event Listeners
+  socket.on('incomingCall', function (user) {
+    handleIncomingCall(user, 'audio');
+  });
+
+  socket.on('incomingVideoCall', function (user) {
+    handleIncomingCall(user, 'video');
+  });
+
+  socket.on('callCancelled', function (callerId) {
+    if (incomingCallInfo && incomingCallInfo.callerId === callerId) {
+      clearRingTimeout();
+      stopRingtone();
+      $('#incoming-call-card').addClass('hide-element');
+      incomingCallInfo = null;
+    }
   });
 
   socket.on('notifyCallReceived', function () {
-    calling = true;
-    document.getElementById('audio-call-start').click();
-    $('#show-time').removeClass('hide-time').text('00:00');
-    $('#show-call-text').addClass('hide-time');
-    stopCallTimer();
-    callTimerTimeout = setTimeout(update, 1000);
+    if (personalCallActive && personalCallIsCaller) {
+      stopRingtone();
+      if (outgoingRingTimeout) {
+        clearTimeout(outgoingRingTimeout);
+        outgoingRingTimeout = null;
+      }
+      $('#personal-call-timer').text('Connecting...');
+      acquireLocalMediaAndStartSession(personalCallPeerId, 'audio');
+    }
+  });
+
+  socket.on('notifyVideoCallReceived', function () {
+    if (personalCallActive && personalCallIsCaller) {
+      stopRingtone();
+      if (outgoingRingTimeout) {
+        clearTimeout(outgoingRingTimeout);
+        outgoingRingTimeout = null;
+      }
+      $('#personal-call-timer').text('Connecting...');
+      acquireLocalMediaAndStartSession(personalCallPeerId, 'video');
+    }
+  });
+
+  socket.on('callEnded', function () {
+    end1to1Call(false);
+  });
+
+  socket.on('videoCallEnded', function () {
+    end1to1Call(false);
+  });
+
+  socket.on('callNotReceived', function () {
+    if (personalCallActive && personalCallIsCaller) {
+      alert((personalCallPeerName || 'User') + ' declined the call.');
+      end1to1Call(false);
+    }
+  });
+
+  socket.on('videoCallNotReceived', function () {
+    if (personalCallActive && personalCallIsCaller) {
+      alert((personalCallPeerName || 'User') + ' declined the video call.');
+      end1to1Call(false);
+    }
+  });
+
+  socket.on('userBusy', function () {
+    alert((personalCallPeerName || 'User') + ' is currently busy or on Do Not Disturb.');
+    end1to1Call(false);
+  });
+
+  socket.on('userVideoBusy', function () {
+    alert((personalCallPeerName || 'User') + ' is currently busy or on Do Not Disturb.');
+    end1to1Call(false);
+  });
+
+  socket.on('userOffline', function () {
+    alert((personalCallPeerName || 'User') + ' is currently offline.');
+    end1to1Call(false);
   });
 
   $('#show-people').on('click', function (e) {
@@ -2052,154 +2301,6 @@ $(function () {
       $btn.addClass('change-button-position');
       $icon.removeClass('fa-bars').addClass('fa-xmark');
     }
-  });
-
-  // 1-to-1 Video Call
-  $('#video-call').on('click', function (e) {
-    e.preventDefault();
-    var userid = getActivePrivateUserId();
-    if (!userid) return;
-    socket.emit('initializeVideoCall', userid);
-    $('#video-call-section').removeClass('end-video-call');
-    $('#audio-call').prop('disabled', true);
-    $('#video-call').prop('disabled', true);
-    calling = true;
-  });
-
-  socket.on('incomingVideoCall', function (user) {
-    if (!user) return;
-    if (!calling) {
-      video_caller_id = user.id;
-      document.getElementById('video-calling-text').innerHTML = user.name + ' Video Calling...';
-      playNotificationSound();
-
-      var activeId = getActivePrivateUserId();
-      if (activeId === user.id) {
-        $('#video-call-receive-section').removeClass('accept-reject-video-call');
-        $('#audio-call').prop('disabled', true);
-        $('#video-call').prop('disabled', true);
-      } else {
-        $('#alert-box').removeClass('alert-hide');
-        document.getElementsByClassName('alert-text')[0].innerHTML =
-          user.name + ' Video Calling... (Click to answer)';
-      }
-      hide_video_section(user.id);
-    } else {
-      socket.emit('userVideoBusy', user.id);
-    }
-  });
-
-  socket.on('userVideoBusy', function () {
-    end_video_call();
-    alert('User is currently busy or on Do Not Disturb.');
-  });
-
-  $('#accept-video-call').on('click', function (e) {
-    e.preventDefault();
-    clearVideoRingTimeout();
-    var userid = video_caller_id || getActivePrivateUserId();
-    socket.emit('videoCallReceived', userid);
-    $('#video-call-receive-section').addClass('accept-reject-video-call');
-    $('#video-call-section').removeClass('end-video-call');
-
-    $('#audio-call').prop('disabled', true);
-    $('#video-call').prop('disabled', true);
-
-    $('#alert-box').addClass('alert-hide');
-    calling = true;
-    document.getElementById('video-call-start').click();
-    $('#other-video').removeClass('other-video');
-  });
-
-  socket.on('notifyVideoCallReceived', function () {
-    calling = true;
-    document.getElementById('video-call-start').click();
-    $('#other-video').removeClass('other-video');
-  });
-
-  $('#video-call-start').on('click', function (e) {
-    e.preventDefault();
-    var constraints = { audio: true, video: true };
-    var userid = getActivePrivateUserId() || video_caller_id;
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
-
-    navigator.mediaDevices
-      .getUserMedia(constraints)
-      .then(function (mediaStream) {
-        activeMediaStream = mediaStream;
-        var selfVideo = document.getElementById('self-video');
-        if (selfVideo) {
-          selfVideo.srcObject = mediaStream;
-          $('#self-video').removeClass('self-video');
-        }
-        startPrivateSfuSession(userid, 'video', mediaStream);
-      })
-      .catch(function (err) {
-        console.error('Camera/mic error:', err);
-        end_video_call();
-      });
-  });
-
-  socket.on('onVideoCall', function (arrayBuffer) {
-    var blob = new Blob([arrayBuffer], { type: 'video/webm; codecs=vp9' });
-    document.getElementById('other-video').src = window.URL.createObjectURL(blob);
-  });
-
-  $('#reject-video-call').on('click', function (e) {
-    e.preventDefault();
-    var userid = video_caller_id || getActivePrivateUserId();
-    reject_video_call(userid);
-  });
-
-  function hide_video_section(userid) {
-    clearVideoRingTimeout();
-    videoRingTimeout = setTimeout(function () {
-      if (!calling && video_caller_id === userid) {
-        reject_video_call(userid);
-      }
-    }, 18000);
-  }
-
-  function reject_video_call(userid) {
-    clearVideoRingTimeout();
-    if (userid) {
-      socket.emit('videoCallNotReceived', userid);
-    }
-    $('#video-call-receive-section').addClass('accept-reject-video-call');
-    $('#audio-call').prop('disabled', false);
-    $('#video-call').prop('disabled', false);
-    $('#alert-box').addClass('alert-hide');
-    video_caller_id = '';
-  }
-
-  socket.on('videoCallNotReceived', function () {
-    end_video_call();
-  });
-
-  function end_video_call() {
-    calling = false;
-    video_caller_id = '';
-    clearVideoRingTimeout();
-    stopCallTimer();
-    stopMediaStream();
-
-    $('#audio-call').prop('disabled', false);
-    $('#video-call').prop('disabled', false);
-    $('#video-call-section').addClass('end-video-call');
-    $('#video-call-receive-section').addClass('accept-reject-video-call');
-    $('#other-video').addClass('other-video');
-    $('#alert-box').addClass('alert-hide');
-  }
-
-  $('#end-video-call').on('click', function (e) {
-    e.preventDefault();
-    var userid = getActivePrivateUserId() || video_caller_id;
-    end_video_call();
-    socket.emit('videoCallEnded', userid);
-  });
-
-  socket.on('videoCallEnded', function () {
-    end_video_call();
   });
 
   function add_message(message, id) {

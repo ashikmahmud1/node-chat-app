@@ -3,7 +3,11 @@ const registerCallHandlers = (io, socket, users) => {
     const caller = users.getUser(socket.id);
     if (!caller || !userid) return;
     const recipient = users.getUser(userid);
-    if (recipient && recipient.status === 'dnd') {
+    if (!recipient) {
+      socket.emit('userOffline');
+      return;
+    }
+    if (recipient.status === 'dnd') {
       socket.emit('userBusy');
       return;
     }
@@ -14,7 +18,11 @@ const registerCallHandlers = (io, socket, users) => {
     const caller = users.getUser(socket.id);
     if (!caller || !userid) return;
     const recipient = users.getUser(userid);
-    if (recipient && recipient.status === 'dnd') {
+    if (!recipient) {
+      socket.emit('userOffline');
+      return;
+    }
+    if (recipient.status === 'dnd') {
       socket.emit('userVideoBusy');
       return;
     }
@@ -29,6 +37,11 @@ const registerCallHandlers = (io, socket, users) => {
   socket.on('videoCallReceived', (userid) => {
     if (!userid) return;
     socket.broadcast.to(userid).emit('notifyVideoCallReceived');
+  });
+
+  socket.on('callCancelled', (userid) => {
+    if (!userid) return;
+    socket.broadcast.to(userid).emit('callCancelled', socket.id);
   });
 
   socket.on('audioCall', (stream = {}) => {

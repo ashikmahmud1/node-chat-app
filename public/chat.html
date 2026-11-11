@@ -15,7 +15,7 @@
 
 <body class="chat">
 <audio id="message-received" preload="auto"></audio>
-<audio id="audioCalling" preload="auto"></audio>
+<audio id="audioCalling" preload="auto" autoplay></audio>
 
 <!-- Left Sidebar: 50% Top (Groups) & 50% Bottom (Personal Chat) -->
 <aside class="chat__sidebar" id="chat__sidebar">
@@ -29,6 +29,7 @@
                 <span class="status-pulse-dot"></span>
                 <span id="connection-status-text">Connected</span>
             </div>
+            <span id="sidebar-room-name" style="display: none;"># General</span>
         </div>
     </div>
 
@@ -131,12 +132,10 @@
 
             <!-- Personal Chat 1-to-1 Call Controls -->
             <div id="personal-header-call-actions" class="header-call-btn-group hide-element">
-                <button type="button" id="audio-call-start" class="hide-call-button"></button>
-                <button type="button" id="video-call-start" class="hide-call-button"></button>
-                <button type="button" id="audio-call" class="btn-header-call btn-header-audio" title="1-to-1 Audio Call">
+                <button type="button" id="audio-call" class="btn-header-call btn-header-audio" title="Start 1-to-1 Audio Call">
                     <i class="fa-solid fa-phone" aria-hidden="true"></i> <span>Audio</span>
                 </button>
-                <button type="button" id="video-call" class="btn-header-call btn-header-video" title="1-to-1 Video Call">
+                <button type="button" id="video-call" class="btn-header-call btn-header-video" title="Start 1-to-1 Video Call">
                     <i class="fa-solid fa-video" aria-hidden="true"></i> <span>Video</span>
                 </button>
             </div>
@@ -146,6 +145,26 @@
     <!-- Global In-App Alert / Notification Banner -->
     <div class="alert alert-success animated slideInDown text-center alert-display alert-hide" id="alert-box">
         <i class="fa-solid fa-bell" aria-hidden="true"></i> <span class="alert-text"></span>
+    </div>
+
+    <!-- Floating Incoming Call Notification Card (Enterprise Discord/Slack Caliber) -->
+    <div id="incoming-call-card" class="incoming-call-card hide-element" role="dialog" aria-modal="true" aria-label="Incoming Call">
+        <div class="incoming-call-card__avatar-wrap">
+            <div id="incoming-caller-avatar" class="user-avatar-badge user-avatar-badge--calling">??</div>
+            <span class="incoming-call-ping"></span>
+        </div>
+        <div class="incoming-call-card__meta">
+            <h4 id="incoming-caller-name">Caller</h4>
+            <span id="incoming-call-label" class="incoming-call-subtitle"><i class="fa-solid fa-phone fa-shake"></i> Incoming Call...</span>
+        </div>
+        <div class="incoming-call-card__controls">
+            <button type="button" id="accept-call" class="btn-call-action btn-call-accept" title="Accept Call">
+                <i class="fa-solid fa-phone" aria-hidden="true"></i> <span>Accept</span>
+            </button>
+            <button type="button" id="reject-call" class="btn-call-action btn-call-decline" title="Decline Call">
+                <i class="fa-solid fa-phone-slash" aria-hidden="true"></i> <span>Decline</span>
+            </button>
+        </div>
     </div>
 
     <!-- Multi-User Group SFU Conference Stage -->
@@ -174,66 +193,36 @@
         <div id="room-video-grid" class="room-video-grid"></div>
     </section>
 
-    <!-- Personal 1-to-1 SFU Call & Video Stage (Inline in Right Canvas) -->
-    <section id="personal-call-stage" class="personal-call-stage">
-        <div class="private-video-stage" id="private-video-stage">
-            <video id="other-video" class="other-video" autoplay playsinline></video>
-            <video id="self-video" class="self-video" muted autoplay playsinline></video>
-        </div>
-        <div class="call-section calling end-call" id="call-section">
-            <div class="text-center">
-                <h3 id="show-call-text">1-to-1 Audio Calling...</h3>
-                <h3 id="show-time" class="hide-time">00:00</h3>
-                <div class="private-call-controls">
-                    <button type="button" class="btn btn-secondary btn-sm" id="private-toggle-mic-audio" title="Mute / Unmute">
-                        <i class="fa-solid fa-microphone" aria-hidden="true"></i>
-                    </button>
-                    <button type="button" class="btn btn-danger btn-sm" id="end-call">
-                        <i class="fa-solid fa-phone-slash" aria-hidden="true"></i> End Call
-                    </button>
-                </div>
+    <!-- Personal 1-to-1 WebRTC Call Stage (Inline in Right Canvas) -->
+    <section id="personal-call-stage" class="personal-call-stage hide-element">
+        <div class="personal-call-header">
+            <div class="personal-call-header__info">
+                <span class="live-indicator">LIVE 1:1</span>
+                <span id="personal-call-title">1-to-1 Call</span>
+                <span id="personal-call-timer" class="call-timer-pill">00:00</span>
+            </div>
+            <div class="personal-call-header__controls">
+                <button type="button" id="personal-toggle-mic" class="sfu-ctrl-btn" title="Mute / Unmute Microphone">
+                    <i class="fa-solid fa-microphone" aria-hidden="true"></i>
+                </button>
+                <button type="button" id="personal-toggle-cam" class="sfu-ctrl-btn hide-element" title="Turn Camera On / Off">
+                    <i class="fa-solid fa-video" aria-hidden="true"></i>
+                </button>
+                <button type="button" id="end-call" class="sfu-ctrl-btn sfu-ctrl-danger" title="End Call">
+                    <i class="fa-solid fa-phone-slash" aria-hidden="true"></i> End Call
+                </button>
             </div>
         </div>
-        <div class="call-section calling end-video-call" id="video-call-section">
-            <div class="text-center">
-                <h3>1-to-1 Video Calling...</h3>
-                <div class="private-call-controls">
-                    <button type="button" class="btn btn-secondary btn-sm" id="private-toggle-mic-video" title="Mute / Unmute">
-                        <i class="fa-solid fa-microphone" aria-hidden="true"></i>
-                    </button>
-                    <button type="button" class="btn btn-secondary btn-sm" id="private-toggle-cam-video" title="Toggle Camera">
-                        <i class="fa-solid fa-video" aria-hidden="true"></i>
-                    </button>
-                    <button type="button" class="btn btn-danger btn-sm" id="end-video-call">
-                        <i class="fa-solid fa-phone-slash" aria-hidden="true"></i> End Call
-                    </button>
+        <div class="private-video-stage hide-element" id="private-video-stage">
+            <div class="private-video-main">
+                <video id="other-video" autoplay playsinline></video>
+                <div class="video-tile-badge" id="other-video-badge">
+                    <i class="fa-solid fa-user" aria-hidden="true"></i> <span id="other-video-name">Participant</span>
                 </div>
             </div>
-        </div>
-        <div class="call-section accept-reject-call" id="call-receive-section">
-            <div class="text-center">
-                <div class="text-center animated flash infinite incoming-call-title" id="audio-calling-text"></div>
-                <div class="incoming-call-buttons">
-                    <button type="button" class="btn btn-primary accept-call" id="accept-call">
-                        <i class="fa-solid fa-phone" aria-hidden="true"></i> Accept
-                    </button>
-                    <button type="button" class="btn btn-danger reject-call" id="reject-call">
-                        <i class="fa-solid fa-phone-slash" aria-hidden="true"></i> Reject
-                    </button>
-                </div>
-            </div>
-        </div>
-        <div class="call-section accept-reject-video-call" id="video-call-receive-section">
-            <div class="text-center">
-                <div class="text-center animated flash infinite incoming-call-title" id="video-calling-text"></div>
-                <div class="incoming-call-buttons">
-                    <button type="button" class="btn btn-primary accept-video-call" id="accept-video-call">
-                        <i class="fa-solid fa-video" aria-hidden="true"></i> Accept
-                    </button>
-                    <button type="button" class="btn btn-danger reject-video-call" id="reject-video-call">
-                        <i class="fa-solid fa-phone-slash" aria-hidden="true"></i> Reject
-                    </button>
-                </div>
+            <div class="private-video-pip" id="private-video-pip">
+                <video id="self-video" muted autoplay playsinline></video>
+                <div class="pip-label">You</div>
             </div>
         </div>
     </section>

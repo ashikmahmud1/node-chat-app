@@ -51,11 +51,12 @@ const registerChatHandlers = (
     const history = messageStore ? messageStore.getMessages(canonicalRoom) : [];
     if (history.length > 0) {
       socket.emit('roomHistory', history);
+    } else {
+      socket.emit('newMessage', generateMessage('Admin', 'Welcome to the chat app'));
     }
 
     io.to(canonicalRoom).emit('updateUserList', users.getUserList(canonicalRoom));
     broadcastRoomList();
-    socket.emit('newMessage', generateMessage('Admin', 'Welcome to the chat app'));
     socket.broadcast
       .to(canonicalRoom)
       .emit('newMessage', generateMessage('Admin', `${name} has joined.`));

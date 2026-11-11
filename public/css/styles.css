@@ -1073,68 +1073,245 @@ button:disabled {
   gap: 6px;
 }
 
-/* Personal 1-to-1 Call Stage inside Canvas */
-.personal-call-stage {
-  padding: 0 24px;
-  background: var(--bg-chat);
+/* ==========================================================================
+   4. Floating Incoming Call Card & Personal 1-to-1 Call Stages
+   ========================================================================== */
+
+/* Floating Incoming Call Dialog */
+.incoming-call-card {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-lg);
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 20px 45px -10px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  z-index: 10000;
+  animation: slideDownIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slideDownIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -20px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.incoming-call-card__avatar-wrap {
+  position: relative;
   flex-shrink: 0;
 }
 
+.user-avatar-badge--calling {
+  width: 44px;
+  height: 44px;
+  font-size: 15px;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.4);
+  animation: callAvatarPulse 1.8s infinite;
+}
+
+@keyframes callAvatarPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(79, 70, 229, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(79, 70, 229, 0);
+  }
+}
+
+.incoming-call-ping {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--success);
+  border: 2px solid #0f172a;
+}
+
+.incoming-call-card__meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+}
+
+.incoming-call-card__meta h4 {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f8fafc;
+  margin: 0 0 2px 0;
+}
+
+.incoming-call-subtitle {
+  font-size: 12px;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.incoming-call-card__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-call-action {
+  padding: 8px 16px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-call-accept {
+  background: var(--success);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
+}
+
+.btn-call-accept:hover {
+  background: var(--success-hover);
+}
+
+.btn-call-decline {
+  background: var(--danger);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.35);
+}
+
+.btn-call-decline:hover {
+  background: var(--danger-hover);
+}
+
+/* Personal 1-to-1 Call Stage (Unified Inline Canvas Header) */
+.personal-call-stage {
+  padding: 12px 24px;
+  background: linear-gradient(135deg, #090d16, #1e293b);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.personal-call-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.personal-call-header__info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.personal-call-header__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Personal 1-to-1 Video Stage with Picture-in-Picture (PiP) */
 .private-video-stage {
   position: relative;
   width: 100%;
-  margin-top: 14px;
+  margin-top: 12px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #020617;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.private-video-main {
+  position: relative;
+  width: 100%;
+  height: 360px;
+  background: #020617;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 #other-video {
   width: 100%;
-  height: 260px;
-  background: #0f172a;
-  border-radius: var(--radius-md);
+  height: 100%;
+  background: #020617;
   object-fit: cover;
+}
+
+.video-tile-badge {
+  position: absolute;
+  bottom: 12px;
+  left: 14px;
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.private-video-pip {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  width: 150px;
+  height: 95px;
+  background: #0f172a;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 10;
+  transition: transform 0.2s ease;
+}
+
+.private-video-pip:hover {
+  transform: scale(1.05);
 }
 
 #self-video {
-  position: absolute;
-  bottom: 12px;
-  right: 12px;
-  width: 140px;
-  height: 95px;
-  background: #1e293b;
-  border: 2px solid #fff;
-  border-radius: var(--radius-sm);
+  width: 100%;
+  height: 100%;
   object-fit: cover;
-  box-shadow: var(--shadow-md);
+  transform: scaleX(-1);
 }
 
-.call-section {
-  background: linear-gradient(135deg, #1e293b, #0f172a);
+.pip-label {
+  position: absolute;
+  bottom: 4px;
+  left: 6px;
+  background: rgba(0, 0, 0, 0.65);
   color: #fff;
-  padding: 14px 18px;
-  border-radius: var(--radius-md);
-  margin: 12px 0;
-  box-shadow: var(--shadow-md);
-}
-
-.call-section h3 {
-  font-size: 14px;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
   font-weight: 600;
-  margin-bottom: 8px;
-}
-
-.private-call-controls,
-.incoming-call-buttons {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 8px;
-}
-
-.incoming-call-title {
-  font-size: 15px;
-  font-weight: 700;
-  margin-bottom: 8px;
 }
 
 .alert-display {

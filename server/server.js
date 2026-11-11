@@ -10,16 +10,18 @@ const { ensureBucketExists } = require('./middlewares/file-upload-s3');
 const sharedUsers = new Users();
 const sharedMessageStore = new MessageStore();
 
-const tempServer = http.createServer();
+let activeSfuService = null;
+const app = createApp(sharedUsers, {
+  getActiveSessionCount: () => (activeSfuService ? activeSfuService.getActiveSessionCount() : 0),
+});
+const httpServer = http.createServer(app);
 const { io, users, messageStore, sfuService } = initializeSocket(
-  tempServer,
+  httpServer,
   {},
   sharedUsers,
   sharedMessageStore
 );
-const app = createApp(sharedUsers, sfuService);
-tempServer.on('request', app);
-const httpServer = tempServer;
+activeSfuService = sfuService;
 
 const gracefulShutdown = (signal) => {
   logger.info(`Received ${signal}. Closing server gracefully...`);
