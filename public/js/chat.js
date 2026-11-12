@@ -91,7 +91,6 @@ $(async function () {
   }
 
   let directCall = null;
-  let activeMediaStream = null;
   let personalCallTimerTimeout = null;
   let activeChatMode = 'group';
   let activePrivateUserId = '';
@@ -102,10 +101,7 @@ $(async function () {
   let knownRoomsList = [];
   let groupUnreadCounts = Object.create(null);
   let roomCall = null;
-  let roomLocalStream = null;
-  let roomScreenStream = null;
   let roomCallTimerTimeout = null;
-  let roomTrackOwners = Object.create(null);
 
   // Message Tracking, Deduplication & Typing
   var rendered_message_ids = new Set();
@@ -123,7 +119,6 @@ $(async function () {
   const directHistoryCursors = new Map();
   const loadedDirectHistories = new Set();
 
-  const calling_audio = document.getElementById('audioCalling');
   const soundSettingsKey = 'nexus_sound_preferences';
   const soundSettings = document.querySelector('.sound-settings');
   const soundToggles = Array.from(soundSettings.querySelectorAll('input[type="checkbox"]'));
@@ -244,6 +239,8 @@ $(async function () {
     sounds.setRinging(null);
     sounds.stopMessage();
     sounds.stopPreview();
+    leaveRoomSfuCall();
+    endDirectCall();
   });
 
   function notifyMessage() {
@@ -622,92 +619,87 @@ $(async function () {
     play();
   }
 
-  function renderRoomVideoTile(streamId, labelText, stream, isSelf) {
-    var grid = document.getElementById('room-video-grid');
-    if (!grid) return;
-
-    var tileId = 'sfu-tile-' + streamId.replace(/[^a-zA-Z0-9_-]/g, '_');
-    var existingTile = document.getElementById(tileId);
-    var videoEl;
-
-    if (!existingTile) {
-      existingTile = document.createElement('div');
-      existingTile.className = 'sfu-video-tile';
-      existingTile.id = tileId;
-
-      videoEl = document.createElement('video');
-      videoEl.autoplay = true;
-      videoEl.playsInline = true;
-      if (isSelf) {
-        videoEl.muted = true;
-      }
-
-      var badge = document.createElement('div');
-      badge.className = 'sfu-video-tile__label';
-      badge.innerHTML = '<i class="fa-solid fa-user" aria-hidden="true"></i> <span></span>';
-      badge.querySelector('span').textContent = labelText;
-
-      existingTile.appendChild(videoEl);
-      if (!isSelf) {
-        const playButton = document.createElement('button');
-        playButton.type = 'button';
-        playButton.className = 'sfu-video-tile__play';
-        playButton.textContent = 'Play media';
-        playButton.setAttribute('aria-label', 'Play media for ' + labelText);
-        playButton.hidden = true;
-        existingTile.appendChild(playButton);
-      }
-      existingTile.appendChild(badge);
-      grid.appendChild(existingTile);
-    } else {
-      videoEl = existingTile.querySelector('video');
-      var nameSpan = existingTile.querySelector('.sfu-video-tile__label span');
-      if (nameSpan && labelText) {
-        nameSpan.textContent = labelText;
-      }
-    }
-
-    if (isSelf) {
-      if (videoEl.srcObject !== stream) videoEl.srcObject = stream;
-    } else {
-      playRemoteMedia(videoEl, stream, existingTile.querySelector('.sfu-video-tile__play'));
-    }
-  }
-
-  function removeRoomVideoTile(streamId) {
-    if (!streamId) return;
-    var tileId = 'sfu-tile-' + streamId.replace(/[^a-zA-Z0-9_-]/g, '_');
-    var tile = document.getElementById(tileId);
-    if (tile && tile.parentNode) {
-      var vid = tile.querySelector('video');
-      if (vid) vid.srcObject = null;
-      tile.parentNode.removeChild(tile);
-    }
-  }
+  const gridHelpers = { getInitials, getAvatarStyle, playRemoteMedia };
+  const roomGrid = new CallGrid(document.getElementById('room-call-stage'), gridHelpers);
+  const personalGrid = new CallGrid(document.getElementById('personal-call-stage'), gridHelpers);
+  const stopTracks = (stream) => stream?.getTracks().forEach((track) => track.stop());
+  const roomSessionId = () => 'room:chat:' + currentRoomName.toLowerCase();
 
   function updateRoomCallStatus(participants) {
     $('#room-call-count').text(String(participants.length));
     $('#room-call-active-badge').toggleClass('hide-element', participants.length === 0);
   }
 
-  function updateRoomOwners(owners) {
-    Object.assign(roomTrackOwners, owners);
-    for (const [id, owner] of Object.entries(owners)) {
-      const tile = document.getElementById('sfu-tile-' + id);
-      if (tile) {
-        tile.querySelector('.sfu-video-tile__label span').textContent =
-          owner.name + (owner.screenSharing ? ' (Screen)' : '') + (owner.audioEnabled === false ? ' (Muted)' : '');
-      }
-    }
+  function updateShareButton(scope, presentation) {
+    const button = $('#' + scope + '-toggle-screen');
+    const active = Boolean(presentation?.stream && !presentation.pending);
+    const label = active ? 'Stop sharing' : presentation?.pending ? 'Please wait…' :
+      presentation?.available === false ? 'Sharing unavailable' : 'Share screen';
+    button.prop('disabled', !presentation?.available || presentation.pending)
+      .toggleClass('call-share-button--active', active)
+      .attr('aria-pressed', String(active))
+      .attr('title', presentation?.available === false ? 'Screen sharing is unavailable in this browser' : label);
+    button.find('span').text(label);
+    button.find('i').attr('class', active ? 'fa-solid fa-stop' : 'fa-solid fa-desktop');
   }
 
-  const stopTracks = (stream) => stream?.getTracks().forEach((track) => track.stop());
-  const roomSessionId = () => 'room:chat:' + currentRoomName.toLowerCase();
+  async function startCallMedia(call, { scope, grid, isCurrent, onConnected, onError }) {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: call.mode === 'video' });
+    if (!isCurrent()) return stopTracks(stream);
+    call.stream = stream;
+    call.grid = grid;
+    call.self = {
+      name: currentUserName, streamId: 'local-self', screenStreamId: 'local-screen',
+      audioEnabled: true, videoEnabled: call.mode === 'video', screenSharing: false,
+    };
+    grid.setStream(call.self.streamId, stream);
+    grid.update(call.self, true);
+    const media = await sfu.start(call.sessionId, call.mode, stream, {
+      onParticipants: (participants) => {
+        if (!isCurrent()) return;
+        for (const participant of participants) {
+          if (participant.socketId !== socket.id) grid.update(participant);
+        }
+      },
+      onTrack: ({ streams: [remote] }) => {
+        if (isCurrent() && remote) grid.setStream(remote.id, remote);
+      },
+      onConnected,
+      onError,
+    });
+    if (!media || !isCurrent()) return;
+    call.presentation = new CallPresentation(
+      media.screenSender,
+      async (screenSharing) => {
+        const payload = { sessionId: call.sessionId, screenSharing };
+        try {
+          await request('sfu:media-state', payload);
+        } catch (error) {
+          if (screenSharing || !isCurrent()) throw error;
+          try {
+            await request('sfu:media-state', payload);
+          } catch (stopError) {
+            if (isCurrent()) onError('The call ended because screen sharing could not be stopped remotely.');
+            throw stopError;
+          }
+        }
+      },
+      (capture) => {
+        call.self.screenSharing = Boolean(capture);
+        grid.setStream(call.self.screenStreamId, capture);
+        grid.update(call.self, true);
+        updateShareButton(scope, call.presentation);
+      },
+      (error) => { if (isCurrent()) showError(error.message); },
+    );
+    $('#' + scope + '-toggle-mic, #' + scope + '-toggle-cam').prop('disabled', false);
+    updateShareButton(scope, call.presentation);
+  }
 
   async function joinRoomSfuCall(mode) {
     if (!ready || switching || roomCall) return;
     if (directCall) return showError('End your direct call before joining a group call.');
-    const call = { sessionId: roomSessionId(), media: null };
+    const call = { sessionId: roomSessionId(), mode };
     roomCall = call;
     updateDirectAvailability();
     sounds.stopMessage();
@@ -717,97 +709,59 @@ $(async function () {
     $('#room-call-timer').text('Connecting…');
     $('#room-call-stage').removeClass('hide-element');
     $('#room-toggle-cam').toggleClass('hide-element', mode === 'audio');
+    resetMediaButtons('room');
+    const onError = (message) => {
+      if (roomCall !== call) return;
+      showError(message);
+      leaveRoomSfuCall();
+    };
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' });
-      if (roomCall !== call) return stopTracks(stream);
-      roomLocalStream = stream;
-      renderRoomVideoTile('local-self', currentUserName + ' (You)', stream, true);
-      call.media = await sfu.start(call.sessionId, mode, stream, {
-        reserveVideo: true,
-        onOwners: updateRoomOwners,
-        onTrack: (event) => {
-          const remote = event.streams[0];
-          if (remote) renderRoomVideoTile(remote.id, roomTrackOwners[remote.id]?.name || 'Guest', remote, false);
-        },
+      await startCallMedia(call, {
+        scope: 'room',
+        grid: roomGrid,
+        isCurrent: () => roomCall === call,
         onConnected: () => {
-          if (roomCallTimerTimeout) return;
+          if (roomCall !== call || roomCallTimerTimeout) return;
           const startedAt = Date.now();
           showTimer('#room-call-timer', startedAt);
           roomCallTimerTimeout = setInterval(() => showTimer('#room-call-timer', startedAt), 1000);
         },
-        onError: (message) => {
-          if (roomCall !== call) return;
-          showError(message);
-          leaveRoomSfuCall();
-        },
+        onError,
       });
     } catch (error) {
-      if (roomCall !== call) return;
-      showError(error.message);
-      leaveRoomSfuCall();
+      onError(error.message);
     }
   }
 
-  async function toggleRoomScreenShare() {
-    const call = roomCall;
-    const sender = call?.media?.videoSender;
-    if (!sender) return showError('Wait for the call to connect before sharing your screen.');
-    const button = $('#room-toggle-screen').prop('disabled', true);
-    try {
-      if (roomScreenStream) {
-        await sender.replaceTrack(roomLocalStream.getVideoTracks()[0] || null);
-        if (roomCall !== call) return;
-        stopTracks(roomScreenStream);
-        roomScreenStream = null;
-        renderRoomVideoTile('local-self', currentUserName + ' (You)', roomLocalStream, true);
-      } else {
-        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        if (roomCall !== call) return stopTracks(stream);
-        try {
-          await sender.replaceTrack(stream.getVideoTracks()[0]);
-          if (roomCall !== call) return stopTracks(stream);
-        } catch (error) {
-          stopTracks(stream);
-          throw error;
-        }
-        roomScreenStream = stream;
-        stream.getVideoTracks()[0].addEventListener('ended', toggleRoomScreenShare, { once: true });
-        renderRoomVideoTile('local-self', currentUserName + ' (Screen)', stream, true);
-      }
-      button.toggleClass('muted-state', Boolean(roomScreenStream)).attr('aria-pressed', String(Boolean(roomScreenStream)));
-      send('sfu:media-state', { sessionId: call.sessionId, screenSharing: Boolean(roomScreenStream) });
-    } catch (error) {
-      if (roomCall === call && error.name !== 'NotAllowedError') showError(error.message);
-    } finally {
-      button.prop('disabled', false);
-    }
+  function closeCallMedia(call, grid) {
+    call.presentation?.close();
+    sfu.close();
+    stopTracks(call.stream);
+    grid.clear();
   }
 
   function leaveRoomSfuCall(notify = true) {
     if (!roomCall) return;
-    if (notify && socket.connected) send('sfu:leave', { sessionId: roomCall.sessionId });
+    const call = roomCall;
     roomCall = null;
+    closeCallMedia(call, roomGrid);
+    if (notify && socket.connected) send('sfu:leave', { sessionId: call.sessionId });
     updateDirectAvailability();
-    sfu.close();
-    stopTracks(roomLocalStream);
-    stopTracks(roomScreenStream);
-    roomLocalStream = null;
-    roomScreenStream = null;
-    roomTrackOwners = Object.create(null);
     clearInterval(roomCallTimerTimeout);
     roomCallTimerTimeout = null;
-    $('#room-video-grid').empty();
     $('#room-call-stage').addClass('hide-element');
     $('#join-room-audio-btn, #join-room-video-btn').prop('disabled', false);
     resetMediaButtons('room');
   }
 
-  socket.on('sfu:participant-left', ({ sessionId, streamId }) => {
-    if (roomCall?.sessionId === sessionId) removeRoomVideoTile(streamId);
+  socket.on('sfu:participant-left', ({ sessionId, streamId, screenStreamId }) => {
+    const call = roomCall || directCall;
+    if (call?.sessionId === sessionId) call.grid?.removePerson(streamId, screenStreamId);
   });
 
   socket.on('sfu:media-state', (state) => {
-    if (roomCall?.sessionId === state.sessionId) updateRoomOwners({ [state.streamId]: state });
+    const call = roomCall || directCall;
+    if (call?.sessionId === state.sessionId && state.socketId !== socket.id) call.grid?.update(state);
   });
 
   socket.on('sfu:room-call-status', ({ sessionId, participants }) => {
@@ -817,31 +771,39 @@ $(async function () {
   $('#join-room-audio-btn').on('click', () => joinRoomSfuCall('audio'));
   $('#join-room-video-btn').on('click', () => joinRoomSfuCall('video'));
   $('#room-leave-call').on('click', () => leaveRoomSfuCall());
-  $('#room-toggle-screen').on('click', toggleRoomScreenShare);
+  $('#room-toggle-screen').on('click', () => roomCall?.presentation?.toggle());
+  $('#personal-toggle-screen').on('click', () => directCall?.presentation?.toggle());
 
   function resetMediaButtons(scope) {
-    $('#' + scope + '-toggle-mic').removeClass('muted-state').attr('aria-pressed', 'false').find('i').attr('class', 'fa-solid fa-microphone');
-    $('#' + scope + '-toggle-cam').removeClass('muted-state').attr('aria-pressed', 'false').find('i').attr('class', 'fa-solid fa-video');
-    $('#' + scope + '-toggle-screen').removeClass('muted-state').attr('aria-pressed', 'false');
+    for (const [control, icon, label] of [
+      ['mic', 'microphone', 'Mute microphone'], ['cam', 'video', 'Turn camera off'],
+    ]) {
+      $('#' + scope + '-toggle-' + control).prop('disabled', true)
+        .removeClass('muted-state').attr({ 'aria-pressed': 'false', title: label })
+        .find('i').attr('class', 'fa-solid fa-' + icon);
+    }
+    updateShareButton(scope, null);
   }
 
-  function toggleTrack(button, stream, sessionId, kind) {
-    const tracks = kind === 'audio' ? stream?.getAudioTracks() : stream?.getVideoTracks();
+  function toggleTrack(button, call, kind) {
+    const tracks = kind === 'audio' ? call?.stream?.getAudioTracks() : call?.stream?.getVideoTracks();
     if (!tracks?.length) return;
     const enabled = !tracks[0].enabled;
-    tracks.forEach((track) => { track.enabled = enabled; });
-    const icon = kind === 'audio' ? 'microphone' : 'video';
-    button.toggleClass('muted-state', !enabled).attr('aria-pressed', String(!enabled));
+    for (const track of tracks) track.enabled = enabled;
+    const isAudio = kind === 'audio';
+    const icon = isAudio ? 'microphone' : 'video';
+    const title = isAudio ? (enabled ? 'Mute microphone' : 'Unmute microphone') :
+      (enabled ? 'Turn camera off' : 'Turn camera on');
+    button.toggleClass('muted-state', !enabled).attr({ 'aria-pressed': String(!enabled), title });
     button.find('i').attr('class', 'fa-solid fa-' + icon + (enabled ? '' : '-slash'));
-    send('sfu:media-state', { sessionId, [kind + 'Enabled']: enabled });
+    const setting = kind + 'Enabled';
+    call.self[setting] = enabled;
+    call.grid.update(call.self, true);
+    send('sfu:media-state', { sessionId: call.sessionId, [setting]: enabled });
   }
 
-  $('#room-toggle-mic').on('click', function () {
-    toggleTrack($(this), roomLocalStream, roomCall?.sessionId, 'audio');
-  });
-  $('#room-toggle-cam').on('click', function () {
-    toggleTrack($(this), roomLocalStream, roomCall?.sessionId, 'video');
-  });
+  $('#room-toggle-mic').on('click', function () { toggleTrack($(this), roomCall, 'audio'); });
+  $('#room-toggle-cam').on('click', function () { toggleTrack($(this), roomCall, 'video'); });
 
   $('#presence-status-select').on('change', async function () {
     const status = this.value;
@@ -1741,11 +1703,8 @@ $(async function () {
     $('#end-call span').text(call.accepted ? 'End call' : 'Cancel call');
     $('#personal-call-stage').removeClass('hide-element');
     $('#personal-toggle-cam').toggleClass('hide-element', call.mode === 'audio');
-    $('#personal-toggle-mic, #personal-toggle-cam').prop('disabled', true);
     updateDirectAvailability();
     resetMediaButtons('personal');
-    $('#personal-toggle-mic').attr('title', 'Mute microphone');
-    $('#personal-toggle-cam').attr('title', 'Turn camera off');
   }
 
   async function startDirectCall(mode) {
@@ -1785,54 +1744,34 @@ $(async function () {
   });
 
   async function connectDirectMedia(call) {
+    call.sessionId = 'private:' + call.id;
+    const onError = (message) => {
+      if (directCall !== call) return;
+      showError(message);
+      endDirectCall('failed');
+    };
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: call.mode === 'video' });
-      if (directCall !== call) return stopTracks(stream);
-      activeMediaStream = stream;
-      $('#personal-toggle-mic, #personal-toggle-cam').prop('disabled', false);
-      if (call.mode === 'video') {
-        document.getElementById('self-video').srcObject = stream;
-        $('#private-video-stage').removeClass('hide-element');
-      }
-      await sfu.start('private:' + call.id, call.mode, stream, {
-        onOwners: () => {},
-        onTrack: (event) => {
-          const remote = event.streams[0];
-          if (!remote) return;
-          const isVideo = call.mode === 'video';
-          const element = isVideo ? document.getElementById('other-video') : calling_audio;
-          if (isVideo) $('#other-video-name').text(call.peer.name);
-          playRemoteMedia(element, remote, document.getElementById('personal-play-media'));
-        },
-        onError: (message) => {
-          if (directCall !== call) return;
-          showError(message);
-          endDirectCall('failed');
-        },
+      await startCallMedia(call, {
+        scope: 'personal',
+        grid: personalGrid,
+        isCurrent: () => directCall === call,
+        onError,
       });
     } catch (error) {
-      if (directCall !== call) return;
-      showError(error.message);
-      endDirectCall('failed');
+      onError(error.message);
     }
   }
 
   function closeDirectCall() {
     if (!directCall) return;
+    const call = directCall;
     directCall = null;
     sounds.setRinging(null);
-    sfu.close();
-    stopTracks(activeMediaStream);
-    activeMediaStream = null;
+    closeCallMedia(call, personalGrid);
     clearInterval(personalCallTimerTimeout);
     personalCallTimerTimeout = null;
-    document.getElementById('self-video').srcObject = null;
-    document.getElementById('other-video').srcObject = null;
-    calling_audio.srcObject = null;
-    const playButton = document.getElementById('personal-play-media');
-    playButton.hidden = true;
-    playButton.onclick = null;
-    $('#personal-call-stage, #private-video-stage, #incoming-call-card').addClass('hide-element');
+    $('#personal-call-stage, #incoming-call-card').addClass('hide-element');
+    resetMediaButtons('personal');
     updateDirectAvailability();
   }
 
@@ -1891,16 +1830,8 @@ $(async function () {
   $('#end-call').on('click', () => endDirectCall());
   $('#audio-call').on('click', () => startDirectCall('audio'));
   $('#video-call').on('click', () => startDirectCall('video'));
-  $('#personal-toggle-mic').on('click', function () {
-    toggleTrack($(this), activeMediaStream, 'private:' + directCall?.id, 'audio');
-    const label = $(this).attr('aria-pressed') === 'true' ? 'Unmute microphone' : 'Mute microphone';
-    $(this).attr('title', label);
-  });
-  $('#personal-toggle-cam').on('click', function () {
-    toggleTrack($(this), activeMediaStream, 'private:' + directCall?.id, 'video');
-    const label = $(this).attr('aria-pressed') === 'true' ? 'Turn camera on' : 'Turn camera off';
-    $(this).attr('title', label);
-  });
+  $('#personal-toggle-mic').on('click', function () { toggleTrack($(this), directCall, 'audio'); });
+  $('#personal-toggle-cam').on('click', function () { toggleTrack($(this), directCall, 'video'); });
 
   $('#show-people').on('click', () => setSidebar($('#show-people').attr('aria-expanded') !== 'true'));
 

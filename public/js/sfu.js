@@ -10,7 +10,7 @@ class SfuClient {
     });
   }
 
-  async start(sessionId, mode, stream, { onTrack, onConnected, onError, onOwners, reserveVideo = false }) {
+  async start(sessionId, mode, stream, { onTrack, onConnected, onError, onParticipants }) {
     const response = await fetch('/api/rtc-config', { signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error('Call configuration is unavailable.');
     const { iceServers, iceTransportPolicy } = await response.json();
@@ -18,14 +18,11 @@ class SfuClient {
     // Offer each media kind with a transport so the SFU can accept it before
     // grouping the negotiated media onto a single BUNDLE transport.
     const pc = new RTCPeerConnection({ iceServers, iceTransportPolicy, bundlePolicy: 'max-compat' });
-    const state = { pc, sessionId, onError, onOwners, connectionTimer: null };
+    const state = { pc, sessionId, onError, onParticipants, connectionTimer: null };
     this.current = state;
     for (const track of stream.getTracks()) pc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
-    if (reserveVideo && !stream.getVideoTracks().length) {
-      state.videoSender = pc.addTransceiver('video', { direction: 'sendonly', streams: [stream] }).sender;
-    } else {
-      state.videoSender = pc.getSenders().find((sender) => sender.track?.kind === 'video');
-    }
+    const presentation = pc.addTransceiver('video', { direction: 'sendonly', streams: [new MediaStream()] });
+    state.screenSender = presentation.sender;
     pc.ontrack = onTrack;
     const failed = () => {
       if (this.current === state) onError('The media connection timed out.');
@@ -49,20 +46,20 @@ class SfuClient {
     if (iceTransportPolicy === 'relay' && !/^a=candidate:[^\r\n]+ typ relay(?: |\r?$)/m.test(pc.localDescription.sdp)) {
       throw new Error('The browser could not reach the TURN relay.');
     }
-    const result = await this.request('sfu:join', { sessionId, mode, sdp: pc.localDescription }, 28000);
+    const result = await this.request('sfu:join', { sessionId, mode, screenMid: presentation.mid, sdp: pc.localDescription }, 28000);
     if (this.current !== state) return null;
-    onOwners(Object.fromEntries(result.participants.map((peer) => [peer.streamId, peer])));
+    onParticipants(result.participants);
     await pc.setRemoteDescription(result.sdp);
     if (this.current === state) await this.request('sfu:ready', { sessionId });
     return this.current === state ? state : null;
   }
 
-  async answer({ sessionId, revision, sdp, trackOwnerMap }) {
+  async answer({ sessionId, revision, sdp, participants }) {
     const state = this.current;
     if (state?.sessionId !== sessionId) return;
     const { pc } = state;
     try {
-      state.onOwners(trackOwnerMap);
+      state.onParticipants(participants);
       await pc.setRemoteDescription(sdp);
       await pc.setLocalDescription(await pc.createAnswer());
       await this.gatherIce(pc);

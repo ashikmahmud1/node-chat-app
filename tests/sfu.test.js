@@ -24,7 +24,6 @@ const bundledDescription = [
 
 class MockPeer {
   connectionStateChange = new MockEvent();
-  onTrack = new MockEvent();
   offers = 0;
   senders = [];
 
@@ -40,17 +39,15 @@ class MockPeer {
     return { type: 'offer', sdp: bundledDescription };
   }
   async close() { this.closed = true; }
-  getReceivers() { return []; }
-
-  addTransceiver(track) {
-    const sender = { track, onPictureLossIndication: new MockEvent() };
+  addTransceiver(track, { streams }) {
+    const sender = { track, streamId: streams[0].id, onPictureLossIndication: new MockEvent() };
     this.senders.push(sender);
     return { sender, stop: () => { this.senders = this.senders.filter((item) => item !== sender); } };
   }
 
-  publish(kind) {
+  publish(kind, mid = String(kind === 'audio' ? 0 : 1)) {
     const track = { kind, onReceiveRtp: new MockEvent() };
-    this.onTrack.emit(track);
+    this.ontrack({ track, transceiver: { mid }, receiver: {} });
     return track;
   }
 }
@@ -71,7 +68,7 @@ describe('SFU negotiation and cleanup', () => {
 
   async function join(id, sdp = 'offer') {
     const { sdp: answer } = await service.joinSession({
-      sessionId, socket: { id }, mode: 'video', sdp: { type: 'offer', sdp },
+      sessionId, socket: { id }, mode: 'video', sdp: { type: 'offer', sdp }, screenMid: '2',
       user: { name: id, room: 'Engineering' },
     });
     assert.match(answer.sdp, /s=-\r\nc=IN IP4 0\.0\.0\.0\r\nt=0 0/);
@@ -99,7 +96,7 @@ describe('SFU negotiation and cleanup', () => {
     assert.equal(bob.pc.senders.length, 2);
     assert.equal(bob.pc.offers, 1);
 
-    alice.pc.publish('audio');
+    alice.pc.publish('video', '3');
     await new Promise(setImmediate);
     assert.equal(bob.pc.offers, 1);
     await service.handleAnswer({ sessionId, socketId: 'bob', revision: 99, sdp: { type: 'answer', sdp: 'stale' } });
@@ -120,5 +117,36 @@ describe('SFU negotiation and cleanup', () => {
     assert.equal(video.onReceiveRtp.listeners.size, 0);
     assert.equal(bob.pc.senders.length, 0);
     assert.equal(alice.pc.closed, true);
+  });
+
+  it('forwards the presentation separately, only while sharing, and cleans up when the presenter leaves', async () => {
+    const alice = await join('alice');
+    const bob = await join('bob');
+    const camera = alice.pc.publish('video', '1');
+    const screen = alice.pc.publish('video', '2');
+    service.ready(sessionId, 'alice');
+    service.ready(sessionId, 'bob');
+    assert.deepEqual(bob.pc.senders.map(({ streamId }) => streamId), ['sfu-peer-alice']);
+
+    const setSharing = (screenSharing) => service.updateMediaState({ sessionId, socketId: 'alice', screenSharing });
+    assert.equal(setSharing(true).screenStreamId, 'sfu-screen-alice');
+    assert.deepEqual(bob.pc.senders.map(({ streamId }) => streamId), ['sfu-peer-alice', 'sfu-screen-alice']);
+    const packets = [];
+    for (const sender of bob.pc.senders) {
+      sender.track.writeRtp = () => packets.push(sender.streamId);
+    }
+    screen.onReceiveRtp.emit({});
+    setSharing(false);
+    screen.onReceiveRtp.emit({});
+    camera.onReceiveRtp.emit({});
+    setSharing(true);
+    screen.onReceiveRtp.emit({});
+    assert.equal(bob.pc.senders.length, 2);
+    assert.deepEqual(packets, ['sfu-screen-alice', 'sfu-peer-alice', 'sfu-screen-alice']);
+
+    await service.leaveSession(sessionId, 'alice');
+    assert.equal(screen.onReceiveRtp.listeners.size, 0);
+    const departure = emitted.find(({ target, event }) => target === 'bob' && event === 'sfu:participant-left');
+    assert.equal(departure.data.screenStreamId, 'sfu-screen-alice');
   });
 });

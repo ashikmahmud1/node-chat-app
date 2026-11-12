@@ -930,7 +930,7 @@ button:disabled {
 .chat__main {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   flex: 1;
   min-width: 0;
   background: var(--bg-chat);
@@ -1171,30 +1171,46 @@ button:disabled {
    4. Multi-User Room SFU & 1-to-1 Personal SFU Stages (Inline in Canvas)
    ========================================================================== */
 
-.room-call-stage {
+.call-stage {
+  --call-grid-height: min(40dvh, 408px);
+  --call-focus-height: min(29dvh, 320px);
   background: var(--bg-dark);
-  color: #fff;
-  padding: 14px 20px;
+  color: #f8fafc;
+  padding: 12px 20px;
   border-bottom: 1px solid #1e293b;
-  max-height: 45vh;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   flex-shrink: 0;
+  max-height: calc(100dvh - 152px);
+}
+
+.call-stage--expanded {
+  --call-grid-height: min(64dvh, 900px);
+  --call-focus-height: min(51dvh, 740px);
 }
 
 .room-call-stage__header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 8px 16px;
 }
 
 .room-call-stage__title {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
+  min-width: 0;
   font-size: 14px;
   font-weight: 600;
+}
+
+#room-call-mode-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .live-indicator {
@@ -1208,6 +1224,7 @@ button:disabled {
 }
 
 .call-timer-pill {
+  flex-shrink: 0;
   background: rgba(255, 255, 255, 0.1);
   padding: 2px 9px;
   border-radius: var(--radius-full);
@@ -1215,90 +1232,210 @@ button:disabled {
   font-size: 12px;
 }
 
-.room-call-stage__controls {
+.room-call-stage__controls,
+.personal-call-header__controls,
+.call-view-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .sfu-ctrl-btn {
   background: #334155;
   color: #fff;
-  padding: 7px 12px;
+  padding: 6px 11px;
+  min-height: 36px;
   border-radius: var(--radius-sm);
   font-size: 12px;
 }
 
-.sfu-ctrl-btn:hover {
+.sfu-ctrl-btn:focus-visible {
+  outline: 2px solid #c7d2fe;
+  outline-offset: -3px;
+}
+
+.sfu-ctrl-btn:not(:disabled):hover {
   background: #475569;
 }
 
 .sfu-ctrl-btn.muted-state {
-  background: var(--warning);
-  color: #fff;
+  background: #55401d;
+  color: #fde68a;
 }
 
-.sfu-ctrl-danger {
+.sfu-ctrl-btn.call-share-button--active,
+.sfu-ctrl-btn[aria-pressed="true"].sfu-video-tile__pin {
+  background: #4338ca;
+}
+
+.sfu-ctrl-btn.sfu-ctrl-danger {
   background: var(--danger);
 }
 
-.sfu-ctrl-danger:hover {
+.sfu-ctrl-btn.sfu-ctrl-danger:hover {
   background: var(--danger-hover);
 }
 
-.room-video-grid {
+.call-view-controls {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.call-view-controls .sfu-ctrl-btn {
+  background: transparent;
+  color: #e2e8f0;
+}
+
+.call-share-status {
+  margin-inline-end: auto;
+  color: #c7d2fe;
+  font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.call-layout-button {
+  grid-column: 2;
+}
+
+.call-expand-button {
+  grid-column: 3;
+}
+
+.call-layout-button:disabled {
+  display: none;
+}
+
+.call-video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 158px), 1fr));
+  gap: 8px;
   overflow-y: auto;
-  max-height: 34vh;
+  overscroll-behavior: contain;
+  max-height: var(--call-grid-height);
+  min-height: 0;
+  min-width: 0;
+  scrollbar-color: #64748b #0f172a;
+}
+
+.call-video-grid[data-layout="focus"] {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 112px), 1fr));
 }
 
 .sfu-video-tile {
   position: relative;
-  background: #1e293b;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #182437;
+  border: 1px solid #334155;
   border-radius: var(--radius-md);
   overflow: hidden;
-  height: 160px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  min-width: 0;
+  height: clamp(96px, 18dvh, 200px);
+  display: grid;
+  place-items: center;
+}
+
+.call-stage--expanded .call-video-grid[data-layout="gallery"] .sfu-video-tile {
+  height: clamp(112px, 27dvh, 350px);
+}
+
+.call-video-grid[data-layout="focus"] .sfu-video-tile:not(.sfu-video-tile--focused) {
+  height: 82px;
+}
+
+.sfu-video-tile--focused {
+  grid-column: 1 / -1;
+  order: -1;
+  height: min(var(--call-focus-height), calc(var(--call-grid-height) - 90px));
+  min-height: 108px;
+}
+
+.sfu-video-tile--screen {
+  background: #020617;
+  border-color: #6366f1;
 }
 
 .sfu-video-tile video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  opacity: 0;
+}
+
+.sfu-video-tile--video video {
+  opacity: 1;
+}
+
+.sfu-video-tile--video .sfu-video-tile__avatar,
+.sfu-video-tile--video .sfu-video-tile__waiting {
+  visibility: hidden;
+}
+
+.sfu-video-tile--self:not(.sfu-video-tile--screen) video {
+  transform: scaleX(-1);
+}
+
+.sfu-video-tile--screen video {
+  object-fit: contain;
+}
+
+.sfu-video-tile__avatar {
+  width: 44px;
+  height: 44px;
+  font-size: 15px;
+}
+
+.sfu-video-tile__waiting {
+  color: #cbd5e1;
+  font-size: 13px;
+  text-align: center;
+}
+
+.sfu-video-tile__pin,
+.sfu-video-tile__play,
+.sfu-video-tile__label {
+  position: absolute;
+  background: #0f172a;
+  z-index: 1;
+}
+
+.sfu-video-tile__pin {
+  top: 5px;
+  right: 5px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 4px;
 }
 
 .sfu-video-tile__play {
-  position: absolute;
   inset: 50% auto auto 50%;
   transform: translate(-50%, -50%);
-  z-index: 1;
   white-space: nowrap;
 }
 
-.sfu-video-tile__play[hidden],
-#personal-play-media[hidden] {
+.sfu-video-tile__play[hidden] {
   display: none;
 }
 
 .sfu-video-tile__label {
-  position: absolute;
-  bottom: 8px;
-  left: 10px;
-  background: rgba(15, 23, 42, 0.8);
-  backdrop-filter: blur(8px);
+  inset: auto auto 5px 5px;
   color: #fff;
-  padding: 3px 8px;
+  padding: 3px 7px;
   border-radius: var(--radius-xs);
   font-size: 11px;
   font-weight: 500;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  max-width: calc(100% - 10px);
+}
+
+.sfu-video-tile__label span:not(.visually-hidden) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ==========================================================================
@@ -1434,14 +1571,6 @@ button:disabled {
   background: var(--danger-hover);
 }
 
-/* Personal 1-to-1 Call Stage (Unified Inline Canvas Header) */
-.personal-call-stage {
-  padding: 14px 24px;
-  background: linear-gradient(115deg, #101a30, #182c4d);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  flex-shrink: 0;
-}
-
 .personal-call-header {
   display: flex;
   flex-wrap: wrap;
@@ -1483,95 +1612,7 @@ button:disabled {
   white-space: nowrap;
 }
 
-.personal-call-header__controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 
-/* Personal 1-to-1 Video Stage with Picture-in-Picture (PiP) */
-.private-video-stage {
-  position: relative;
-  width: 100%;
-  margin-top: 12px;
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  background: #020617;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.private-video-main {
-  position: relative;
-  width: 100%;
-  height: 360px;
-  background: #020617;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-#other-video {
-  width: 100%;
-  height: 100%;
-  background: #020617;
-  object-fit: cover;
-}
-
-.video-tile-badge {
-  position: absolute;
-  bottom: 12px;
-  left: 14px;
-  background: rgba(15, 23, 42, 0.8);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  color: #fff;
-  padding: 4px 10px;
-  border-radius: var(--radius-xs);
-  font-size: 12px;
-  font-weight: 500;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
-}
-
-.private-video-pip {
-  position: absolute;
-  bottom: 14px;
-  right: 14px;
-  width: 150px;
-  height: 95px;
-  background: #0f172a;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  z-index: 10;
-  transition: transform 0.2s ease;
-}
-
-.private-video-pip:hover {
-  transform: scale(1.05);
-}
-
-#self-video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transform: scaleX(-1);
-}
-
-.pip-label {
-  position: absolute;
-  bottom: 4px;
-  left: 6px;
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-weight: 600;
-}
 
 .alert-display {
   position: relative;
@@ -1595,6 +1636,10 @@ button:disabled {
   text-align: center;
   max-width: 420px;
   padding: 40px 20px;
+}
+
+.call-stage:not(.hide-element) ~ .chat__canvas-pane .empty-canvas-hero {
+  display: none;
 }
 
 .empty-hero-icon {
@@ -2422,8 +2467,25 @@ button:disabled {
     margin-inline: 14px;
   }
 
-  .personal-call-stage {
-    padding-inline: 14px;
+  .call-stage {
+    padding-inline: 12px;
+  }
+
+  .call-stage--expanded {
+    --call-grid-height: 54dvh;
+    --call-focus-height: 43dvh;
+  }
+
+  .call-video-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 116px), 1fr));
+  }
+
+  .call-video-grid[data-layout="focus"] {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 96px), 1fr));
+  }
+
+  .sfu-ctrl-btn {
+    min-height: 40px;
   }
 
   .chat__footer textarea {

@@ -222,32 +222,41 @@
     </div>
 
     <!-- Multi-User Group SFU Conference Stage -->
-    <section id="room-call-stage" class="room-call-stage hide-element">
+    <section id="room-call-stage" class="call-stage hide-element" aria-labelledby="room-call-mode-label">
         <div class="room-call-stage__header">
             <div class="room-call-stage__title">
                 <span id="room-call-mode-label">Group call</span>
                 <span id="room-call-timer" class="call-timer-pill">00:00</span>
             </div>
             <div class="room-call-stage__controls">
-                <button type="button" id="room-toggle-mic" class="sfu-ctrl-btn" title="Mute / Unmute Microphone">
+                <button type="button" id="room-toggle-mic" class="sfu-ctrl-btn" aria-label="Mute microphone" title="Mute microphone" aria-pressed="false" disabled>
                     <i class="fa-solid fa-microphone" aria-hidden="true"></i>
                 </button>
-                <button type="button" id="room-toggle-cam" class="sfu-ctrl-btn" title="Turn Camera On / Off">
+                <button type="button" id="room-toggle-cam" class="sfu-ctrl-btn" aria-label="Turn camera off" title="Turn camera off" aria-pressed="false" disabled>
                     <i class="fa-solid fa-video" aria-hidden="true"></i>
                 </button>
-                <button type="button" id="room-toggle-screen" class="sfu-ctrl-btn" title="Share Screen">
-                    <i class="fa-solid fa-desktop" aria-hidden="true"></i>
+                <button type="button" id="room-toggle-screen" class="sfu-ctrl-btn call-share-button" aria-pressed="false" disabled>
+                    <i class="fa-solid fa-desktop" aria-hidden="true"></i> <span>Share screen</span>
                 </button>
                 <button type="button" id="room-leave-call" class="sfu-ctrl-btn sfu-ctrl-danger" title="Leave Conference">
                     <i class="fa-solid fa-phone-slash" aria-hidden="true"></i> Leave
                 </button>
             </div>
         </div>
-        <div id="room-video-grid" class="room-video-grid"></div>
+        <div class="call-view-controls">
+            <span class="call-share-status" role="status"></span>
+            <button type="button" class="sfu-ctrl-btn call-layout-button" aria-controls="room-video-grid" disabled>
+                <i class="fa-solid fa-panorama" aria-hidden="true"></i> <span>Focus share</span>
+            </button>
+            <button type="button" class="sfu-ctrl-btn call-expand-button" aria-controls="room-video-grid" aria-expanded="false">
+                <i class="fa-solid fa-expand" aria-hidden="true"></i> <span>Expand</span>
+            </button>
+        </div>
+        <div id="room-video-grid" class="call-video-grid" data-layout="gallery"></div>
     </section>
 
     <!-- Personal 1-to-1 WebRTC Call Stage (Inline in Right Canvas) -->
-    <section id="personal-call-stage" class="personal-call-stage hide-element">
+    <section id="personal-call-stage" class="call-stage hide-element" aria-labelledby="personal-call-title">
         <div class="personal-call-header">
             <div class="personal-call-header__info">
                 <span id="personal-call-avatar" class="user-avatar-badge" aria-hidden="true"></span>
@@ -259,33 +268,30 @@
                 <span id="personal-call-announcement" class="visually-hidden" role="status"></span>
             </div>
             <div class="personal-call-header__controls">
-                <button type="button" id="personal-play-media" class="sfu-ctrl-btn" hidden>
-                    <i class="fa-solid fa-play" aria-hidden="true"></i> Play media
-                </button>
                 <button type="button" id="personal-toggle-mic" class="sfu-ctrl-btn" aria-label="Mute microphone" title="Mute microphone">
                     <i class="fa-solid fa-microphone" aria-hidden="true"></i>
                 </button>
                 <button type="button" id="personal-toggle-cam" class="sfu-ctrl-btn hide-element" aria-label="Turn camera off" title="Turn camera off">
                     <i class="fa-solid fa-video" aria-hidden="true"></i>
                 </button>
+                <button type="button" id="personal-toggle-screen" class="sfu-ctrl-btn call-share-button" aria-pressed="false" disabled>
+                    <i class="fa-solid fa-desktop" aria-hidden="true"></i> <span>Share screen</span>
+                </button>
                 <button type="button" id="end-call" class="sfu-ctrl-btn sfu-ctrl-danger">
                     <i class="fa-solid fa-phone-slash" aria-hidden="true"></i> <span>End call</span>
                 </button>
             </div>
         </div>
-        <audio id="audioCalling" autoplay></audio>
-        <div class="private-video-stage hide-element" id="private-video-stage">
-            <div class="private-video-main">
-                <video id="other-video" autoplay playsinline></video>
-                <div class="video-tile-badge" id="other-video-badge">
-                    <i class="fa-solid fa-user" aria-hidden="true"></i> <span id="other-video-name">Participant</span>
-                </div>
-            </div>
-            <div class="private-video-pip" id="private-video-pip">
-                <video id="self-video" muted autoplay playsinline></video>
-                <div class="pip-label">You</div>
-            </div>
+        <div class="call-view-controls">
+            <span class="call-share-status" role="status"></span>
+            <button type="button" class="sfu-ctrl-btn call-layout-button" aria-controls="personal-video-grid" disabled>
+                <i class="fa-solid fa-panorama" aria-hidden="true"></i> <span>Focus share</span>
+            </button>
+            <button type="button" class="sfu-ctrl-btn call-expand-button" aria-controls="personal-video-grid" aria-expanded="false">
+                <i class="fa-solid fa-expand" aria-hidden="true"></i> <span>Expand</span>
+            </button>
         </div>
+        <div id="personal-video-grid" class="call-video-grid" data-layout="gallery"></div>
     </section>
 
     <!-- Group Chat Canvas View -->
@@ -472,6 +478,8 @@
 <script src="/assets/jquery.min.js"></script>
 <script src="/assets/mustache.min.js"></script>
 <script src="/js/sfu.js"></script>
+<script src="/js/call-grid.js"></script>
+<script src="/js/call-presentation.js"></script>
 <script src="/js/chat-sounds.js"></script>
 <script src="/js/push-notifications.js"></script>
 <script src="/js/chat.js"></script>

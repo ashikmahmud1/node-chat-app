@@ -41,6 +41,7 @@ class SfuService {
       room: peer.room,
       mode: peer.mode,
       streamId: peer.streamId,
+      screenStreamId: peer.screenStreamId,
       connected: peer.connected,
       audioEnabled: peer.audioEnabled,
       videoEnabled: peer.videoEnabled,
@@ -52,7 +53,7 @@ class SfuService {
     return Array.from(this.sessions.values()).some((session) => session.has(socketId));
   }
 
-  async joinSession({ sessionId, socket, mode, sdp, user }) {
+  async joinSession({ sessionId, socket, mode, sdp, screenMid, user }) {
     if (this.hasPeer(socket.id)) reject('Leave your current call first.');
     const activePeers = Array.from(this.sessions.values()).reduce((total, session) => total + session.size, 0);
     if (activePeers >= config.limits.maxSfuPeers) reject('All media connections are in use. Try again shortly.');
@@ -70,11 +71,12 @@ class SfuService {
       room: user.room,
       mode,
       streamId: `sfu-peer-${socket.id}`,
+      screenStreamId: `sfu-screen-${socket.id}`,
       audioEnabled: true,
       videoEnabled: mode === 'video',
       screenSharing: false,
       pc,
-      publishedTracks: [], // Array<{ remoteTrack, kind }>
+      publishedTracks: new Map(),
       forwardedSubscriptions: new Map(),
       negotiationChain: Promise.resolve(),
       closed: false,
@@ -94,18 +96,17 @@ class SfuService {
       if (state === 'failed') this.failPeer(peerState);
     });
 
-    pc.onTrack.subscribe((remoteTrack) => {
+    pc.ontrack = ({ track, transceiver, receiver }) => {
       if (peerState.closed) return;
-      peerState.publishedTracks.push({
-        remoteTrack,
-        kind: remoteTrack.kind,
-      });
+      const screen = transceiver.mid === screenMid;
+      const publication = { track, receiver, screen };
+      peerState.publishedTracks.set(transceiver.mid, publication);
 
       if (!peerState.ready) return;
       for (const otherPeer of session.values()) {
-        if (otherPeer !== peerState && otherPeer.ready) this.forwardTrackToSubscriber(peerState, remoteTrack, otherPeer);
+        if (otherPeer !== peerState && otherPeer.ready) this.forwardTrackToSubscriber(peerState, publication, otherPeer);
       }
-    });
+    };
 
     peerState.timeout = setTimeout(() => this.failPeer(peerState), 25000);
     peerState.timeout.unref();
@@ -133,8 +134,8 @@ class SfuService {
     peer.ready = true;
     for (const other of session.values()) {
       if (other === peer || !other.ready) continue;
-      for (const { remoteTrack } of other.publishedTracks) this.forwardTrackToSubscriber(other, remoteTrack, peer);
-      for (const { remoteTrack } of peer.publishedTracks) this.forwardTrackToSubscriber(peer, remoteTrack, other);
+      for (const publication of other.publishedTracks.values()) this.forwardTrackToSubscriber(other, publication, peer);
+      for (const publication of peer.publishedTracks.values()) this.forwardTrackToSubscriber(peer, publication, other);
     }
   }
 
@@ -146,22 +147,19 @@ class SfuService {
     this.onPeerFailed(peer.socketId, peer.sessionId);
   }
 
-  requestPublisherKeyframe(publisherPeer, remoteTrack) {
-    if (!publisherPeer || publisherPeer.closed || !remoteTrack || !remoteTrack.ssrc) return;
+  requestPublisherKeyframe({ track, receiver }) {
+    if (!track.ssrc) return;
     try {
-      const receivers = publisherPeer.pc.getReceivers();
-      for (const receiver of receivers) {
-        if (receiver && typeof receiver.sendRtcpPLI === 'function') {
-          receiver.sendRtcpPLI(remoteTrack.ssrc);
-        }
-      }
+      receiver.sendRtcpPLI(track.ssrc);
     } catch (error) {
       logger.debug('Could not request video keyframe', { error: error.name });
     }
   }
 
-  forwardTrackToSubscriber(publisherPeer, remoteTrack, subscriberPeer) {
+  forwardTrackToSubscriber(publisherPeer, publication, subscriberPeer) {
     if (publisherPeer.closed || subscriberPeer.closed) return;
+    const { track: remoteTrack, screen } = publication;
+    if (screen && !publisherPeer.screenSharing) return;
     const existing = publisherPeer.forwardedSubscriptions.get(subscriberPeer.socketId);
     if (existing?.some((item) => item.remoteTrack === remoteTrack)) return;
 
@@ -170,11 +168,12 @@ class SfuService {
       codec: remoteTrack.codec,
     });
     const outStream = new MediaStream({
-      id: publisherPeer.streamId,
+      id: screen ? publisherPeer.screenStreamId : publisherPeer.streamId,
     });
     outStream.addTrack(forwardTrack);
 
     const { unSubscribe } = remoteTrack.onReceiveRtp.subscribe((rtp) => {
+      if (screen && !publisherPeer.screenSharing) return;
       if (!forwardTrack.stopped && !subscriberPeer.closed) {
         try {
           forwardTrack.writeRtp(rtp);
@@ -189,7 +188,7 @@ class SfuService {
       transceiver = subscriberPeer.pc.addTransceiver(forwardTrack, { direction: 'sendonly', streams: [outStream] });
       if (remoteTrack.kind === 'video') {
         transceiver.sender.onPictureLossIndication.subscribe(() => {
-          this.requestPublisherKeyframe(publisherPeer, remoteTrack);
+          this.requestPublisherKeyframe(publication);
         });
       }
     } catch (error) {
@@ -201,7 +200,7 @@ class SfuService {
 
     // Request an initial keyframe so the new subscriber renders video immediately
     if (remoteTrack.kind === 'video') {
-      this.requestPublisherKeyframe(publisherPeer, remoteTrack);
+      this.requestPublisherKeyframe(publication);
     }
 
     if (!publisherPeer.forwardedSubscriptions.has(subscriberPeer.socketId)) {
@@ -233,14 +232,11 @@ class SfuService {
       const offer = await peer.pc.createOffer();
       await peer.pc.setLocalDescription(offer);
       if (peer.closed) return;
-      const trackOwnerMap = Object.fromEntries(
-        this.getSessionParticipants(peer.sessionId).map((participant) => [participant.streamId, participant])
-      );
       this.io.to(peer.socketId).emit('sfu:offer', {
         sessionId: peer.sessionId,
         revision,
         sdp: localDescriptionForBrowser(peer.pc.localDescription),
-        trackOwnerMap,
+        participants: this.getSessionParticipants(peer.sessionId),
       });
     })().catch((error) => this.failPeer(peer, error));
   }
@@ -266,17 +262,29 @@ class SfuService {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
     const peer = session.get(socketId);
-    if (!peer || peer.closed) return null;
+    if (!peer?.ready || peer.closed) return null;
 
     if (typeof audioEnabled === 'boolean') peer.audioEnabled = audioEnabled;
     if (typeof videoEnabled === 'boolean') peer.videoEnabled = videoEnabled;
-    if (typeof screenSharing === 'boolean') peer.screenSharing = screenSharing;
+    if (typeof screenSharing === 'boolean' && screenSharing !== peer.screenSharing) {
+      const presentation = Array.from(peer.publishedTracks.values()).find(({ screen }) => screen);
+      if (!presentation) reject('Screen sharing could not be negotiated.');
+      peer.screenSharing = screenSharing;
+      if (screenSharing) {
+        for (const other of session.values()) {
+          if (other !== peer && other.ready) this.forwardTrackToSubscriber(peer, presentation, other);
+        }
+        this.requestPublisherKeyframe(presentation);
+      }
+    }
 
     const payload = {
       sessionId,
       socketId,
       name: peer.name,
+      mode: peer.mode,
       streamId: peer.streamId,
+      screenStreamId: peer.screenStreamId,
       audioEnabled: peer.audioEnabled,
       videoEnabled: peer.videoEnabled,
       screenSharing: peer.screenSharing,
@@ -339,6 +347,7 @@ class SfuService {
           sessionId,
           socketId,
           streamId: leavingPeer.streamId,
+          screenStreamId: leavingPeer.screenStreamId,
         });
       }
       this.broadcastParticipants(sessionId);
