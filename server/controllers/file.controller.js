@@ -20,7 +20,7 @@ async function removeAttachment(id) {
   else await fs.rm(path.join(config.paths.uploads, id), { force: true });
 }
 
-function createFileHandlers({ users, messageStore, guestSession, io }) {
+function createFileHandlers({ users, messageStore, guestSession, io, push }) {
   if (!useS3) mkdirSync(config.paths.uploads, { recursive: true, mode: 0o700 });
   const activeUploads = new Set();
 
@@ -62,7 +62,7 @@ function createFileHandlers({ users, messageStore, guestSession, io }) {
       if (!filename) return res.status(400).json({ error: 'The file needs a name.' });
       messageStore.setAttachmentName(id, filename);
       const message = { ...generateFiles(sender.name, id, filename), ...(replyTo ? { replyTo } : {}) };
-      if (recipient) saveDirectMessage({ io, users, messageStore }, sender, recipient, message);
+      if (recipient) saveDirectMessage({ io, users, messageStore, push }, sender, recipient, message);
       else io.to(channel).emit('newMessage', messageStore.addMessage(channel, { ...message, authorId: guestId }));
       return res.status(201).json({ id });
     } finally {

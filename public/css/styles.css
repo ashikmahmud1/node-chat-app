@@ -690,26 +690,49 @@ button:disabled {
   flex-shrink: 0;
 }
 
-.sound-settings {
+.sound-settings,
+.notification-settings {
   margin-block-end: 8px;
   color: #cbd5e1;
   color-scheme: dark;
   font-size: 13px;
 }
 
-.sound-settings summary {
+.sound-settings summary,
+.notification-settings summary {
   padding: 8px 12px;
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
 .sound-settings summary:hover,
-.sound-settings[open] summary {
+.sound-settings[open] summary,
+.notification-settings summary:hover,
+.notification-settings[open] summary {
   background: rgba(255, 255, 255, 0.07);
 }
 
-.sound-settings summary i {
+.sound-settings summary i,
+.notification-settings summary i {
   margin-inline: 4px;
+}
+
+#toggle-push-notifications {
+  width: 100%;
+  min-height: 36px;
+  margin-block-start: 6px;
+  justify-content: flex-start;
+  padding-inline: 12px;
+  background: var(--bg-sidebar-elevated);
+}
+
+#toggle-push-notifications:hover:not(:disabled) {
+  background: var(--bg-sidebar-hover);
+}
+
+#push-notifications-status:not(:empty) {
+  margin: 4px 12px 0;
+  font-size: 12px;
 }
 
 .sound-settings__options {

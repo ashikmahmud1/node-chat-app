@@ -5,11 +5,11 @@ const { isRealString } = require('../utils/validation');
 const { reject, validateReply } = require('./events');
 const { publishDirect, requireDirectConversation, saveDirectMessage } = require('../services/direct-messages');
 
-function registerPrivateHandlers({ io, socket, users, messageStore, on, signalingLimiter }) {
+function registerPrivateHandlers({ io, socket, users, messageStore, push, on, signalingLimiter }) {
   const conversation = (peerId) => requireDirectConversation(users, messageStore, users.getUser(socket.id), peerId);
 
   const save = ({ sender, recipient }, message) => {
-    const saved = saveDirectMessage({ io, users, messageStore }, sender, recipient, message);
+    const saved = saveDirectMessage({ io, users, messageStore, push }, sender, recipient, message);
     return { id: saved.id };
   };
 

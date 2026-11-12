@@ -27,8 +27,12 @@ function publishDirect({ io, users, messageStore }, sender, recipient, event, pa
   send(recipient, sender);
 }
 
-function saveDirectMessage({ io, users, messageStore }, sender, recipient, message) {
-  const saved = messageStore.addDirectMessage(sender, recipient, message);
+function saveDirectMessage({ io, users, messageStore, push }, sender, recipient, message) {
+  const notify = message.type !== 'call' && push.hasSubscription(recipient.guestId) && push.status(recipient.guestId) !== 'dnd' &&
+    !push.foreground(io, users, recipient.guestId, sender.room);
+  const enqueue = notify ? () => push.enqueue(recipient.guestId, 'message', message.id) : undefined;
+  const saved = messageStore.addDirectMessage(sender, recipient, message, enqueue);
+  if (notify) push.wake();
   publishDirect({ io, users, messageStore }, sender, recipient, 'dm:message', { message: saved });
   return saved;
 }

@@ -5,6 +5,8 @@
     <meta charset="utf-8">
     <title>NexusChat | Chat</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/icons/nexus-192.png">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💬</text></svg>">
     <link rel="stylesheet" href="/assets/icons/css/all.min.css">
     <link rel="stylesheet" href="/css/styles.css">
@@ -71,6 +73,11 @@
     </div>
 
     <div class="sidebar-footer">
+        <details class="notification-settings">
+            <summary><i class="fa-solid fa-bell" aria-hidden="true"></i> Notifications</summary>
+            <button type="button" id="toggle-push-notifications" disabled>Enable notifications</button>
+            <p id="push-notifications-status" role="status"></p>
+        </details>
         <details class="sound-settings">
             <summary><i class="fa-solid fa-volume-high" aria-hidden="true"></i> Sound settings</summary>
             <div class="sound-settings__options">
@@ -466,6 +473,7 @@
 <script src="/assets/mustache.min.js"></script>
 <script src="/js/sfu.js"></script>
 <script src="/js/chat-sounds.js"></script>
+<script src="/js/push-notifications.js"></script>
 <script src="/js/chat.js"></script>
 </body>
 </html>

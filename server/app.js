@@ -4,8 +4,9 @@ const express = require('express');
 const config = require('./config');
 const { createHttpRateLimiter } = require('./middlewares/rate-limit.middleware');
 const { notFoundHandler, errorHandler } = require('./middlewares/error.middleware');
+const { createPushRouter } = require('./controllers/push.controller');
 
-function createApp({ users, guestSession, files }) {
+function createApp({ users, guestSession, files, messageStore, push, calls }) {
   const app = express();
   app.disable('x-powered-by');
   if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
@@ -27,6 +28,7 @@ function createApp({ users, guestSession, files }) {
   app.get('/health', (req, res) => res.set('Cache-Control', 'no-store').json({ status: 'ok' }));
   app.use('/api', createHttpRateLimiter());
   app.post('/api/session', guestSession.establish);
+  app.use('/api/push', createPushRouter({ guestSession, messageStore, push, calls }));
   app.get('/api/rooms', (req, res) => res.set('Cache-Control', 'no-store').json({ rooms: users.getActiveRooms() }));
   app.get('/api/rtc-config', (req, res) => {
     const guestId = guestSession.read(req);

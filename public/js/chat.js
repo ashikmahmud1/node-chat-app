@@ -1,10 +1,22 @@
-$(function () {
+$(async function () {
   'use strict';
 
   const socket = io({ autoConnect: false });
-  const params = JSON.parse(sessionStorage.getItem('nexus_join') || 'null');
+  let params = JSON.parse(sessionStorage.getItem('nexus_join') || 'null');
+  const notificationId = new URLSearchParams(location.search).get('notification');
+  let notification;
+  let notificationError;
+  if (notificationId) {
+    try {
+      notification = await resolvePushNotification(notificationId);
+      params = notification;
+    } catch (error) {
+      notificationError = error.message;
+    }
+    history.replaceState(null, '', '/chat.html');
+  }
   if (!params?.name || !params?.room) {
-    location.replace('/');
+    location.replace(notificationError ? '/?notification=unavailable' : '/');
     return;
   }
   const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
@@ -560,7 +572,7 @@ $(function () {
   function updateDirectAvailability() {
     const peer = directPeers[getActivePrivateUserId()];
     const canSend = ready && Boolean(peer);
-    const canCall = canSend && Boolean(peer.id) && peer.status !== 'dnd' && !directCall && !roomCall;
+    const canCall = canSend && peer.status !== 'dnd' && !directCall && !roomCall;
     $('#private-send-btn, #private-send-file-click, #private-send-location, #private_messages_list .message-toolbar button')
       .each((_, button) => { button.disabled = !canSend || button.getAttribute('aria-busy') === 'true'; });
     $('#audio-call, #video-call, #private_messages_list .call-again-btn').prop('disabled', !canCall);
@@ -1409,13 +1421,56 @@ $(function () {
     updateUsers(users);
     setConnection('Connected', true);
     $('#alert-box').addClass('alert-hide');
-    if (directPeers[previousPeer]) openPersonalChatForPeer(previousPeer, false);
+    if (notification) {
+      openPersonalChatForPeer(notification.peerId, false);
+      notification = null;
+    } else if (directPeers[previousPeer]) {
+      openPersonalChatForPeer(previousPeer, false);
+    }
+    if (notificationError) {
+      showError(notificationError);
+      notificationError = null;
+    }
   });
+
+  const foreground = () => !document.hidden && document.hasFocus();
+  function reportVisibility(event) {
+    if (ready && socket.connected) {
+      socket.emit('push:visibility', { foreground: event.type !== 'pagehide' && event.type !== 'blur' && foreground() });
+    }
+  }
+  document.addEventListener('visibilitychange', reportVisibility);
+  for (const event of ['focus', 'blur', 'pagehide']) window.addEventListener(event, reportVisibility);
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', async ({ data }) => {
+      if (!data?.notificationId) return;
+      try {
+        const target = await resolvePushNotification(data.notificationId);
+        if (!ready) {
+          location.assign('/chat.html?notification=' + data.notificationId);
+          return;
+        }
+        if (target.room.toLowerCase() !== currentRoomName.toLowerCase()) {
+          if (switching || directCall || roomCall) throw new Error('Open this notification after leaving the current call or group switch.');
+          switching = true;
+          try {
+            await request('room:switch', { room: target.room });
+          } finally {
+            switching = false;
+          }
+        }
+        openPersonalChatForPeer(target.peerId, false);
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+  }
 
   socket.on('connect', async () => {
     setConnection('Joining…', false);
     try {
-      await request('join', { name: currentUserName, room: currentRoomName });
+      await request('join', { name: currentUserName, room: currentRoomName, foreground: foreground() });
     } catch (error) {
       if (!socket.connected) return;
       socket.disconnect();
@@ -1695,7 +1750,7 @@ $(function () {
 
   async function startDirectCall(mode) {
     const peer = directPeers[getActivePrivateUserId()];
-    if (!ready || switching || !peer?.id || directCall) return;
+    if (!ready || switching || !peer || directCall) return;
     if (roomCall) return showError('Leave the group call before starting a direct call.');
     const call = { mode, peer, id: null };
     directCall = call;
@@ -1855,6 +1910,7 @@ $(function () {
       if (!response.ok) throw new Error('Could not start a guest session.');
       ({ guestId } = await response.json());
       socket.connect();
+      setupPushNotifications();
     })
     .catch((error) => {
       setConnection('Connection failed', false);

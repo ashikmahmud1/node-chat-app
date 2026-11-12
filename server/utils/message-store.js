@@ -102,12 +102,12 @@ class MessageStore {
     `);
   }
 
-  addDirectMessage(sender, recipient, message) {
+  addDirectMessage(sender, recipient, message, enqueue) {
     const key = directConversation(sender, recipient);
-    return this.addMessage(key, { ...message, authorId: sender.guestId }, [sender, recipient]);
+    return this.addMessage(key, { ...message, authorId: sender.guestId }, [sender, recipient], enqueue);
   }
 
-  addMessage(conversation, message, participants) {
+  addMessage(conversation, message, participants, enqueue) {
     const saved = { reactions: {}, edited: false, ...message };
     return this.transaction(() => {
       this.db.prepare('INSERT INTO messages (id, conversation, created_at, payload) VALUES (?, ?, ?, ?)')
@@ -117,6 +117,7 @@ class MessageStore {
         const [first, second] = sender.guestId < recipient.guestId ? participants : [recipient, sender];
         this.directThreadUpsert().run(conversation, roomChannel(first.room), first.guestId, second.guestId,
           first.name, second.name, saved.createdAt);
+        enqueue?.();
       } else {
         this.db.prepare(`
           DELETE FROM messages WHERE sequence IN (
@@ -204,6 +205,24 @@ class MessageStore {
       .get(directConversation(sender, { guestId }), Date.now() - config.limits.retentionMs);
     if (!thread) return null;
     return { guestId, room: sender.room, name: thread.guest_a === guestId ? thread.name_a : thread.name_b };
+  }
+
+  getNotificationMessage(id, guestId) {
+    const target = this.db.prepare(`
+      SELECT t.room, t.guest_a, t.name_a, t.name_b, json_extract(m.payload, '$.authorId') AS author,
+        r.read_at AS readAt
+      FROM messages m JOIN direct_threads t ON t.conversation = m.conversation
+      LEFT JOIN direct_reads r ON r.message_id = m.id
+      WHERE m.id = ? AND m.created_at >= ? AND (t.guest_a = ? OR t.guest_b = ?)
+        AND json_extract(m.payload, '$.authorId') <> ?
+    `).get(id, Date.now() - config.limits.retentionMs, guestId, guestId, guestId);
+    if (!target) return null;
+    return {
+      room: target.room.slice('chat:'.length),
+      name: target.guest_a === guestId ? target.name_a : target.name_b,
+      peerId: target.author,
+      readAt: target.readAt,
+    };
   }
 
   rememberDirectName({ room, guestId, name }) {

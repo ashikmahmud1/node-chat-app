@@ -3,7 +3,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { once } = require('node:events');
+const { createECDH, randomBytes } = require('node:crypto');
 const { io } = require('socket.io-client');
+const webPush = require('web-push');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-'));
 process.env.DATA_DIR = dataDir;
@@ -59,11 +61,34 @@ describe('HTTP and Socket.IO integration', function () {
     });
   }
 
-  async function startServer(database = ':memory:') {
-    server = createServer(new MessageStore(50, database));
+  async function startServer(database = ':memory:', options) {
+    server = createServer(new MessageStore(50, database), options);
     server.httpServer.listen(0, '127.0.0.1');
     await once(server.httpServer, 'listening');
     origin = 'http://127.0.0.1:' + server.httpServer.address().port;
+  }
+
+  function pushRequest(client, route = '', method = 'GET', body) {
+    return fetch(origin + '/api/push' + route, {
+      method,
+      headers: { Cookie: client.cookie, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }
+
+  function pushSubscription(endpoint) {
+    const keys = createECDH('prime256v1');
+    return {
+      endpoint,
+      keys: { p256dh: keys.generateKeys().toString('base64url'), auth: randomBytes(16).toString('base64url') },
+    };
+  }
+
+  async function waitForPush(deliveries, count) {
+    for (let attempt = 0; attempt < 160 && deliveries.length < count; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(deliveries.length, count);
   }
 
   beforeEach(async () => {
@@ -177,7 +202,7 @@ describe('HTTP and Socket.IO integration', function () {
     const file = await upload(alice, 'Offline attachment body', bob);
     assert.equal(file.status, 201);
     const { id: fileId } = await file.json();
-    await assert.rejects(request(alice.socket, 'call:start', { peerId: bob.guestId, mode: 'audio' }), /no longer in your group/);
+    await assert.rejects(request(alice.socket, 'call:start', { peerId: bob.guestId, mode: 'audio' }), /has not enabled call notifications/);
 
     const substitute = await guest('Bob', 'Engineering');
     const unknown = await request(substitute.socket, 'dm:history', { peerId: alice.guestId });
@@ -222,6 +247,130 @@ describe('HTTP and Socket.IO integration', function () {
     const refreshed = await request(alice.socket, 'dm:history', { peerId: bob.guestId });
     assert.equal(refreshed.messages.find((message) => message.id === target).readAt, receipt.readAt);
     assert.equal(refreshed.messages.find((message) => message.id === fileId).readAt, undefined);
+  });
+
+  it('sends private Web Push alerts for closed chats and validates notification ownership', async () => {
+    const deliveries = [];
+    await server.close();
+    await startServer(':memory:', { sendPush: async (subscription, payload, options) => {
+      const wire = webPush.generateRequestDetails(subscription, payload, options);
+      deliveries.push({ endpoint: subscription.endpoint, payload: JSON.parse(payload), options, wire });
+    } });
+    const alice = await guest('Alice', 'Engineering');
+    const bob = await guest('Bob', 'Engineering');
+    const outside = await guest('Charlie', 'Engineering');
+    const subscription = pushSubscription('https://fcm.googleapis.com/fcm/send/test-registration');
+    assert.equal((await fetch(origin + '/api/push')).status, 401);
+    const registration = await pushRequest(bob, '/subscription', 'PUT', subscription);
+    assert.equal(registration.status, 204);
+    const invalid = await pushRequest(bob, '/subscription', 'PUT', {
+      ...subscription, endpoint: 'https://127.0.0.1/internal',
+    });
+    assert.equal(invalid.status, 400);
+    assert.deepEqual(await (await pushRequest(outside, '/subscription', 'PATCH', { endpoint: subscription.endpoint })).json(),
+      { enabled: false });
+
+    const send = (text) => request(alice.socket, 'dm:send', { peerId: bob.guestId, text });
+    await request(bob.socket, 'push:visibility', { foreground: true });
+    await send('Foreground');
+    assert.deepEqual(deliveries, []);
+    const left = once(alice.socket, 'updateUserList');
+    bob.socket.disconnect();
+    await left;
+    const { id } = await send('Private lock screen text');
+    await waitForPush(deliveries, 1);
+    const [delivery] = deliveries;
+    assert.equal(delivery.endpoint, subscription.endpoint);
+    assert.equal(delivery.payload.id, id);
+    assert.equal(delivery.payload.kind, 'message');
+    assert.deepEqual(Object.keys(delivery.payload).sort(), ['expiresAt', 'id', 'kind']);
+    assert.equal(delivery.wire.headers['Content-Encoding'], 'aes128gcm');
+    assert.match(delivery.wire.headers.Authorization, /^vapid /);
+    assert.equal((await pushRequest(outside, '/target/' + id)).status, 404);
+    assert.deepEqual(await (await pushRequest(bob, '/target/' + id)).json(),
+      { room: 'engineering', name: 'Bob', peerId: alice.guestId });
+    await request(alice.socket, 'message:delete', { peerId: bob.guestId, messageId: id });
+    assert.equal((await pushRequest(bob, '/target/' + id)).status, 404);
+
+    assert.equal((await pushRequest(bob, '/subscription', 'DELETE', { endpoint: subscription.endpoint })).status, 204);
+    await send('Opted out');
+    assert.deepEqual(await (await pushRequest(bob, '/subscription', 'PATCH', { endpoint: subscription.endpoint })).json(),
+      { enabled: false });
+    assert.equal(deliveries.length, 1);
+  });
+
+  it('keeps an incoming call answerable after the recipient closes the tab', async () => {
+    const deliveries = [];
+    await server.close();
+    await startServer(':memory:', { sendPush: async (subscription, payload, options) => {
+      deliveries.push({ payload: JSON.parse(payload), options });
+    } });
+    const alice = await guest('Alice', 'Engineering');
+    const bob = await guest('Bob', 'Engineering');
+    const outside = await guest('Charlie', 'Engineering');
+    const subscription = pushSubscription('https://web.push.apple.com/test-registration');
+    assert.equal((await pushRequest(bob, '/subscription', 'PUT', subscription)).status, 204);
+    await request(bob.socket, 'push:visibility', { foreground: true });
+    const incoming = once(bob.socket, 'call:incoming');
+    const { id } = await request(alice.socket, 'call:start', { peerId: bob.guestId, mode: 'video' });
+    assert.equal((await incoming)[0].id, id);
+    assert.equal(deliveries.length, 0);
+    const left = once(alice.socket, 'updateUserList');
+    bob.socket.disconnect();
+    await left;
+    await waitForPush(deliveries, 1);
+    assert.equal(deliveries[0].payload.kind, 'call');
+    assert.equal(deliveries[0].payload.id, id);
+    assert.equal(deliveries[0].options.urgency, 'high');
+    assert.ok(deliveries[0].options.TTL > 0 && deliveries[0].options.TTL <= 45);
+    assert.equal((await pushRequest(outside, '/target/' + id)).status, 404);
+    assert.deepEqual(await (await pushRequest(bob, '/target/' + id)).json(),
+      { room: 'Engineering', name: 'Bob', peerId: alice.guestId });
+
+    const returning = await connect(bob.cookie);
+    await request(returning.socket, 'join', { name: 'Bob', room: 'Design' });
+    await assert.rejects(request(returning.socket, 'call:accept', { id }), /no longer ringing/);
+    const offer = once(returning.socket, 'call:incoming');
+    await request(returning.socket, 'room:switch', { room: 'Engineering' });
+    assert.equal((await offer)[0].id, id);
+    const accepted = once(alice.socket, 'call:accepted');
+    await request(returning.socket, 'call:accept', { id });
+    assert.equal((await accepted)[0].id, id);
+    await request(alice.socket, 'call:end', { id });
+    assert.equal(deliveries.length, 1);
+    assert.equal((await pushRequest(bob, '/target/' + id)).status, 200);
+
+    await request(returning.socket, 'presence:update', { status: 'dnd' });
+    const departed = once(alice.socket, 'updateUserList');
+    returning.socket.disconnect();
+    await departed;
+    await assert.rejects(request(alice.socket, 'call:start', { peerId: bob.guestId, mode: 'video' }), /unavailable/);
+  });
+
+  it('persists the Web Push key and retries queued notifications after restart', async function () {
+    this.timeout(8000);
+    const database = path.join(dataDir, 'push-restart.sqlite');
+    const first = [];
+    await server.close();
+    await startServer(database, { sendPush: async (subscription, payload) => {
+      first.push(JSON.parse(payload));
+      throw Object.assign(new Error('Temporary provider failure'), { statusCode: 503 });
+    } });
+    const alice = await guest('Alice', 'Engineering');
+    const bob = await guest('Bob', 'Engineering');
+    const subscription = pushSubscription('https://updates.push.services.mozilla.com/wpush/v2/test-registration');
+    assert.equal((await pushRequest(bob, '/subscription', 'PUT', subscription)).status, 204);
+    const { publicKey } = await (await pushRequest(bob)).json();
+    const { id } = await request(alice.socket, 'dm:send', { peerId: bob.guestId, text: 'Queued during outage' });
+    await waitForPush(first, 1);
+    alice.socket.disconnect();
+    bob.socket.disconnect();
+    await server.close();
+    const delivered = [];
+    await startServer(database, { sendPush: async (endpoint, payload) => { delivered.push(JSON.parse(payload)); } });
+    assert.deepEqual(await (await pushRequest(bob)).json(), { publicKey });
+    await waitForPush(delivered, 1);
+    assert.equal(delivered[0].id, id);
   });
 
   it('indexes existing direct history once and keeps read receipts across storage restarts', () => {

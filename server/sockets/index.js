@@ -11,7 +11,7 @@ const { registerCallHandlers } = require('./call.handler');
 const { registerSfuHandlers } = require('./sfu.handler');
 const { logger } = require('../utils/logger');
 
-function initializeSocket(users, messageStore, guestSession) {
+function initializeSocket(users, messageStore, guestSession, push) {
   const handshakeLimiter = new FixedWindowRateLimiter({ windowMs: 10000, max: 120 });
   const io = new Server({
     maxHttpBufferSize: 128 * 1024,
@@ -19,7 +19,7 @@ function initializeSocket(users, messageStore, guestSession) {
       Boolean(guestSession.read(request)) && handshakeLimiter.consume(request.socket.remoteAddress).allowed),
   });
   const sfuService = new SfuService(io);
-  const calls = new CallsService(io, users, sfuService, messageStore);
+  const calls = new CallsService(io, users, sfuService, messageStore, push);
   sfuService.onPeerConnected = (id) => calls.mediaReady(id);
   sfuService.onPeerFailed = (id, sessionId) => {
     if (sessionId.startsWith('private:')) calls.finish(id, sessionId.slice(8), 'failed');
@@ -41,13 +41,13 @@ function initializeSocket(users, messageStore, guestSession) {
 
   io.on('connection', (socket) => {
     const leaveCalls = () => {
-      calls.finish(socket.id, null, 'left');
+      calls.leave(socket.id);
       sfuService.leaveAllSessions(socket.id).catch((error) =>
         logger.warn('Could not leave media session', { error: error.name })
       );
     };
     const context = {
-      io, socket, users, messageStore, sfuService, calls, leaveCalls, signalingLimiter,
+      io, socket, users, messageStore, sfuService, calls, push, leaveCalls, signalingLimiter,
       on: createEventRegistrar(socket, socketRateLimiter),
     };
     socket.on('disconnecting', leaveCalls);
@@ -61,7 +61,7 @@ function initializeSocket(users, messageStore, guestSession) {
     registerSfuHandlers(context);
   });
 
-  return { io, sfuService };
+  return { io, sfuService, calls };
 }
 
 module.exports = { initializeSocket };

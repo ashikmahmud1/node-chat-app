@@ -4,6 +4,9 @@ const form = document.getElementById('join-form');
 const nameInput = document.getElementById('name-input');
 const roomInput = document.getElementById('room-input');
 const status = document.getElementById('join-status');
+if (new URLSearchParams(location.search).get('notification') === 'unavailable') {
+  status.textContent = 'This notification is no longer available for this browser session.';
+}
 
 const previous = JSON.parse(sessionStorage.getItem('nexus_join') || 'null');
 if (previous) {

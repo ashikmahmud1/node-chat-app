@@ -27,10 +27,18 @@ Compose publishes the chat and media ports on loopback. The S3 gateway and manag
 ## How guests and conversations work
 
 - Anyone can discover an active group or join a group by name and view its retained history. Names identify guests in the UI. The signed browser session controls ownership of messages across reconnects and restarts. Rejoining with the same browser session and display name replaces the previous connection in that group.
-- Guests in the same group can start a direct conversation or call. Established direct conversations accept messages and attachments while the other guest is offline. On returning to that group with the same signed browser session, the guest sees their conversations and unread counts. Calls require both guests to be online in the group.
+- Guests in the same group can start a direct conversation or call. Established direct conversations accept messages and attachments while the other guest is offline. On returning to that group with the same signed browser session, the guest sees their conversations and unread counts. An offline guest who enabled notifications can open an incoming call and answer while it is still ringing.
 - Direct messages show **Sent** once saved and **Seen** with a timestamp once the recipient views the message in the focused conversation. Reading one conversation leaves unread counts in other conversations intact.
 - Group history retains the latest 50 messages by default. Direct history loads in pages and retains messages for up to 30 days by default, including unread messages beyond the first page. Attachments are available while their message is retained. Group downloads require current membership, and direct downloads require one of the original guest sessions.
 - The server processes messages and relays media. Group calls allow up to eight participants. One-to-one calls require the recipient to accept, and Do Not Disturb blocks incoming calls.
+
+## Browser push notifications
+
+In the chat sidebar, open **Notifications** and select **Enable notifications**, then grant browser permission. New direct messages and incoming direct calls can appear while the chat tab is closed. The alert opens the relevant conversation or ringing call with the same signed browser session. Alerts keep sender names and message content off the lock screen. Calls ring for up to 45 seconds. Do Not Disturb suppresses push alerts.
+
+Use HTTPS for a deployed site. On iOS and iPadOS, add NexusChat to the Home Screen and enable notifications from the installed web app. [Apple Web Push requirements](https://developer.apple.com/documentation/usernotifications/sending-web-push-notifications-in-web-apps-and-browsers)
+
+The server creates its VAPID key pair in the SQLite database. Preserve the database across deployments so browsers can keep their subscriptions. The VAPID contact defaults to the HTTPS public origin. Set `PUSH_CONTACT` to a monitored `mailto:` or HTTPS URL to override it. The server needs outbound HTTPS access to the browser push services used by its users.
 
 ## Deployment
 

@@ -6,7 +6,7 @@ const { publishDirect, requireDirectConversation } = require('../services/direct
 
 const ALLOWED_REACTIONS = new Set(['👍', '❤️', '🎉', '🚀', '👀']);
 
-function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls, sfuService }) {
+function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls, sfuService, calls, push, signalingLimiter }) {
   const requireUser = () => {
     const user = users.getUser(socket.id);
     if (!user) reject('Join a group first.');
@@ -49,20 +49,23 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     socket.join(roomChannel(room));
     const user = users.addUser(socket.id, name, room, status, socket.data.guestId);
     messageStore.rememberDirectName(user);
+    push.rememberPresence(user);
     const state = snapshot(user, messages);
     // A single snapshot establishes the context before live events arrive.
     socket.emit('room:state', state);
+    calls.attach(user);
     broadcastPresence(room);
     broadcastRooms();
     return state.user;
   }
 
-  on('join', ({ name, room }) => {
+  on('join', ({ name, room, foreground }) => {
     if (users.getUser(socket.id)) reject('Already joined. Use group switching.');
     if (!isRealString(name, config.limits.maxNameLength)) reject('Enter a display name between 1 and 50 characters.');
     const target = resolveRoom(name, room);
     const messages = messageStore.getMessages(roomChannel(target.room));
-    return enter(name.trim(), target, 'online', messages);
+    socket.data.foreground = foreground === true;
+    return enter(name.trim(), target, push.status(socket.data.guestId), messages);
   });
 
   const depart = (user) => {
@@ -86,9 +89,17 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     requireUser();
     const user = users.updateUserStatus(socket.id, status);
     if (!user) reject('Invalid presence status.');
+    push.rememberPresence(user);
     broadcastPresence(user.room);
     return user;
   });
+
+  on('push:visibility', ({ foreground }) => {
+    if (typeof foreground !== 'boolean') return;
+    const user = requireUser();
+    socket.data.foreground = foreground;
+    if (!foreground) calls.notifyBackground(user);
+  }, signalingLimiter);
 
   on('createMessage', ({ text, replyTo }) => {
     const user = requireUser();

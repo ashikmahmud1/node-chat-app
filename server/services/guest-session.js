@@ -15,15 +15,18 @@ function hasAllowedOrigin(req) {
 function createGuestSession(key) {
   const sign = (value) => createHmac('sha256', key).update(value).digest('hex');
 
-  function read(req) {
+  function readSession(req) {
     const cookie = req.headers.cookie?.split(';').map((part) => part.trim())
       .find((part) => part.startsWith(`${COOKIE_NAME}=`));
     if (!cookie) return null;
     const [id, expires, signature, ...rest] = cookie.slice(COOKIE_NAME.length + 1).split('.');
     if (rest.length || !UUID.test(id) || !/^\d{10}$/.test(expires) ||
         Number(expires) <= Math.floor(Date.now() / 1000) || !/^[0-9a-f]{64}$/.test(signature)) return null;
-    return timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(sign(`${id}.${expires}`), 'hex')) ? id : null;
+    return timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(sign(`${id}.${expires}`), 'hex'))
+      ? { guestId: id, expiresAt: Number(expires) * 1000 } : null;
   }
+
+  const read = (req) => readSession(req)?.guestId || null;
 
   function establish(req, res) {
     if (!hasAllowedOrigin(req)) return res.status(403).json({ error: 'Origin is not allowed.' });
@@ -39,7 +42,7 @@ function createGuestSession(key) {
     return res.set('Cache-Control', 'no-store').json({ guestId });
   }
 
-  return { read, establish };
+  return { read, readSession, establish };
 }
 
 module.exports = { createGuestSession, hasAllowedOrigin, UUID };

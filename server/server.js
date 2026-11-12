@@ -10,19 +10,24 @@ const { logger } = require('./utils/logger');
 const { verifyBucket } = require('./middlewares/file-upload-s3');
 const { createGuestSession } = require('./services/guest-session');
 const { createFileHandlers } = require('./controllers/file.controller');
+const { PushService } = require('./services/push');
 
-function createServer(messageStore = new MessageStore()) {
+function createServer(messageStore = new MessageStore(), { sendPush } = {}) {
   const users = new Users();
   const guestSession = createGuestSession(messageStore.getSessionKey());
-  const { io, sfuService } = initializeSocket(users, messageStore, guestSession);
-  const files = createFileHandlers({ users, messageStore, guestSession, io });
-  const app = createApp({ users, guestSession, files });
+  const push = new PushService(messageStore, sendPush);
+  const { io, sfuService, calls } = initializeSocket(users, messageStore, guestSession, push);
+  const files = createFileHandlers({ users, messageStore, guestSession, io, push });
+  const app = createApp({ users, guestSession, files, messageStore, push, calls });
   const httpServer = http.createServer({ requestTimeout: 120000 }, app);
   io.attach(httpServer);
 
   let pendingPurge = Promise.resolve();
   const purge = () => {
-    pendingPurge = pendingPurge.then(files.purge).catch((error) =>
+    pendingPurge = pendingPurge.then(async () => {
+      push.purge();
+      await files.purge();
+    }).catch((error) =>
       logger.error('Retention cleanup failed', { error: error.message })
     );
   };
@@ -33,6 +38,7 @@ function createServer(messageStore = new MessageStore()) {
     clearInterval(cleanup);
     await io.close();
     await sfuService.closeAllSessions();
+    await push.close();
     await pendingPurge;
     messageStore.close();
   }
