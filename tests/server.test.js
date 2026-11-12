@@ -10,7 +10,7 @@ process.env.DATA_DIR = dataDir;
 const { createServer } = require('../server/server');
 const { MessageStore } = require('../server/utils/message-store');
 const { FixedWindowRateLimiter } = require('../server/middlewares/rate-limit.middleware');
-const { generateMessage } = require('../server/utils/message');
+const { directConversation, generateMessage } = require('../server/utils/message');
 
 describe('HTTP and Socket.IO integration', function () {
   this.timeout(5000);
@@ -39,11 +39,11 @@ describe('HTTP and Socket.IO integration', function () {
 
   async function guest(name, room) {
     const client = await connect();
-    await request(client.socket, 'join', { name, room });
+    ({ guestId: client.guestId } = await request(client.socket, 'join', { name, room }));
     return client;
   }
 
-  function upload(client, text, peer) {
+  function upload(client, text, peer, replyTo) {
     const form = new FormData();
     form.append('file', new Blob([text]), 'notes.txt');
     return fetch(origin + '/api/files', {
@@ -53,17 +53,22 @@ describe('HTTP and Socket.IO integration', function () {
         Cookie: client.cookie,
         'X-Chat-Connection': client.socket.id,
         'X-Chat-Channel': encodeURIComponent('chat:engineering'),
-        ...(peer ? { 'X-Chat-Peer': peer.socket.id } : {}),
+        ...(peer ? { 'X-Chat-Peer': peer.guestId } : {}),
+        ...(replyTo ? { 'X-Chat-Reply-To': replyTo } : {}),
       },
     });
   }
 
-  beforeEach(async () => {
-    clients = [];
-    server = createServer(new MessageStore(50, ':memory:'));
+  async function startServer(database = ':memory:') {
+    server = createServer(new MessageStore(50, database));
     server.httpServer.listen(0, '127.0.0.1');
     await once(server.httpServer, 'listening');
     origin = 'http://127.0.0.1:' + server.httpServer.address().port;
+  }
+
+  beforeEach(async () => {
+    clients = [];
+    await startServer();
   });
 
   afterEach(async () => {
@@ -133,12 +138,190 @@ describe('HTTP and Socket.IO integration', function () {
     const outside = await guest('Outside', 'Design');
     const received = once(bob.socket, 'dm:message');
     const sent = once(alice.socket, 'dm:message');
-    await request(alice.socket, 'dm:send', { peerId: bob.socket.id, text: 'Private update' });
+    await request(alice.socket, 'dm:send', { peerId: bob.guestId, text: 'Private update' });
     const [{ message }] = await received;
     assert.deepEqual((await sent)[0].message, message);
-    assert.deepEqual(await request(bob.socket, 'dm:history', { peerId: alice.socket.id }), [message]);
-    await assert.rejects(request(outside.socket, 'dm:send', { peerId: alice.socket.id, text: 'Cross-room message' }), /no longer in your group/);
-    await assert.rejects(request(outside.socket, 'dm:history', { peerId: bob.socket.id }), /no longer in your group/);
+    assert.deepEqual((await request(bob.socket, 'dm:history', { peerId: alice.guestId })).messages, [message]);
+    await assert.rejects(request(outside.socket, 'dm:send', { peerId: alice.guestId, text: 'Cross-room message' }), /unavailable/);
+    await assert.rejects(request(outside.socket, 'dm:history', { peerId: bob.guestId }), /unavailable/);
+  });
+
+  it('delivers a retained offline backlog with unread counts and participant-scoped receipts', async () => {
+    const database = path.join(dataDir, 'offline-delivery.sqlite');
+    await server.close();
+    await startServer(database);
+    let alice = await guest('Alice', 'Engineering');
+    const bob = await guest('Bob', 'Engineering');
+    const departed = once(alice.socket, 'updateUserList');
+    bob.socket.disconnect();
+    await departed;
+    const send = (text) => request(alice.socket, 'dm:send', { peerId: bob.guestId, text });
+    await assert.rejects(send('Unestablished offline contact'), /unavailable/);
+
+    const firstReturn = await connect(bob.cookie);
+    await request(firstReturn.socket, 'join', { name: 'Bob', room: 'engineering' });
+    const first = await send('First exchange');
+    const leftAgain = once(alice.socket, 'updateUserList');
+    firstReturn.socket.disconnect();
+    await leftAgain;
+
+    const queued = [];
+    for (let index = 1; index <= 51; index++) {
+      if (index === 26) {
+        alice.socket.disconnect();
+        alice = { ...await connect(alice.cookie), guestId: alice.guestId };
+        await request(alice.socket, 'join', { name: 'Alice', room: 'engineering' });
+      }
+      queued.push(await send('Offline ' + index));
+    }
+    const file = await upload(alice, 'Offline attachment body', bob);
+    assert.equal(file.status, 201);
+    const { id: fileId } = await file.json();
+    await assert.rejects(request(alice.socket, 'call:start', { peerId: bob.guestId, mode: 'audio' }), /no longer in your group/);
+
+    const substitute = await guest('Bob', 'Engineering');
+    const unknown = await request(substitute.socket, 'dm:history', { peerId: alice.guestId });
+    assert.deepEqual(unknown, { messages: [], before: null });
+    assert.deepEqual(await request(substitute.socket, 'dm:read', { peerId: alice.guestId, messageIds: [queued[0].id] }), []);
+    const substituteLeft = once(alice.socket, 'updateUserList');
+    substitute.socket.disconnect();
+    await substituteLeft;
+
+    alice.socket.disconnect();
+    await server.close();
+    await startServer(database);
+    alice = { ...await connect(alice.cookie), guestId: alice.guestId };
+    await request(alice.socket, 'join', { name: 'Alice', room: 'Engineering' });
+
+    const returned = await connect(bob.cookie);
+    const joined = once(returned.socket, 'room:state');
+    await request(returned.socket, 'join', { name: 'Bob', room: 'engineering' });
+    const [state] = await joined;
+    assert.deepEqual(state.directThreads.map(({ peer, unread }) => [peer.guestId, peer.name, unread]),
+      [[alice.guestId, 'Alice', 53]]);
+    const response = await fetch(origin + '/api/files/' + fileId, { headers: { Cookie: returned.cookie } });
+    assert.equal(await response.text(), 'Offline attachment body');
+    const page = await request(returned.socket, 'dm:history', { peerId: alice.guestId });
+    assert.equal(page.messages.length, 50);
+    assert.equal(page.messages.at(-1).id, fileId);
+    assert.ok(page.messages.every((message) => !message.readAt));
+    const older = await request(returned.socket, 'dm:history', { peerId: alice.guestId, before: page.before });
+    assert.deepEqual(older.messages.map((message) => message.id), [first.id, queued[0].id, queued[1].id]);
+    assert.equal(older.before, null);
+    const target = queued.at(-1).id;
+    assert.deepEqual(await request(alice.socket, 'dm:read', { peerId: bob.guestId, messageIds: [target] }), []);
+    const event = once(alice.socket, 'dm:read');
+    const read = () => request(returned.socket, 'dm:read', { peerId: alice.guestId, messageIds: [target] });
+    const [receipt] = await read();
+    assert.equal(receipt.id, target);
+    assert.ok(receipt.readAt > 0);
+    const [broadcast] = await event;
+    assert.deepEqual(broadcast.receipts, [receipt]);
+    assert.equal(broadcast.peer.guestId, bob.guestId);
+    assert.deepEqual(await read(), [receipt]);
+    const refreshed = await request(alice.socket, 'dm:history', { peerId: bob.guestId });
+    assert.equal(refreshed.messages.find((message) => message.id === target).readAt, receipt.readAt);
+    assert.equal(refreshed.messages.find((message) => message.id === fileId).readAt, undefined);
+  });
+
+  it('indexes existing direct history once and keeps read receipts across storage restarts', () => {
+    const database = path.join(dataDir, 'direct-upgrade.sqlite');
+    const alice = { guestId: '00000000-0000-0000-0000-000000000001', name: 'Alice', room: 'Engineering' };
+    const bob = { guestId: '00000000-0000-0000-0000-000000000002', name: 'Bob', room: 'Engineering' };
+    const key = directConversation(alice, bob);
+    const initial = new MessageStore(50, database);
+    const saved = initial.addMessage(key, { ...generateMessage(alice.name, 'Existing history'), authorId: alice.guestId });
+    initial.db.exec("DROP TABLE direct_reads; DROP TABLE direct_threads; DELETE FROM settings WHERE name = 'direct_threads_v1';");
+    initial.close();
+
+    const upgraded = new MessageStore(50, database);
+    assert.deepEqual(upgraded.getDirectThreads(bob)[0].peer, { guestId: alice.guestId, name: 'Alice' });
+    assert.equal(upgraded.getDirectPage(key).messages[0].id, saved.id);
+    const [receipt] = upgraded.markDirectRead(key, alice.guestId, [saved.id]).receipts;
+    upgraded.close();
+
+    const restarted = new MessageStore(50, database);
+    try {
+      assert.equal(restarted.getDirectThreads(bob)[0].unread, 0);
+      assert.equal(restarted.getDirectPage(key).messages[0].readAt, receipt.readAt);
+    } finally {
+      restarted.close();
+    }
+  });
+
+  it('keeps group and direct reply targets scoped to the original conversation', async () => {
+    const alice = await guest('Alice', 'Engineering');
+    const bob = await guest('Bob', 'Engineering');
+    const outsider = await guest('Charlie', 'Engineering');
+    const { id: groupId } = await request(alice.socket, 'createMessage', { text: 'Group topic' });
+    const { id: privateId } = await request(alice.socket, 'dm:send', { peerId: bob.guestId, text: 'Private topic' });
+    await assert.rejects(request(bob.socket, 'createMessage', { text: 'Wrong room', replyTo: privateId }), /unavailable/);
+    await assert.rejects(request(bob.socket, 'dm:send', { peerId: alice.guestId, text: 'Wrong scope', replyTo: groupId }), /unavailable/);
+    await assert.rejects(request(outsider.socket, 'dm:send', { peerId: alice.guestId, text: 'Wrong peer', replyTo: privateId }), /unavailable/);
+
+    const groupReply = once(alice.socket, 'newMessage');
+    await request(bob.socket, 'createMessage', { text: 'Group answer', replyTo: groupId });
+    assert.deepEqual((await groupReply)[0].reply, { from: 'Alice', text: 'Group topic' });
+    const privateReply = once(alice.socket, 'dm:message');
+    await request(bob.socket, 'dm:send', { peerId: alice.guestId, text: 'Private answer', replyTo: privateId });
+    assert.deepEqual((await privateReply)[0].message.reply, { from: 'Alice', text: 'Private topic' });
+    assert.deepEqual((await request(bob.socket, 'dm:history', { peerId: alice.guestId })).messages.at(-1).reply,
+      { from: 'Alice', text: 'Private topic' });
+
+    const locationReply = once(alice.socket, 'dm:message');
+    await request(bob.socket, 'dm:location', { peerId: alice.guestId, latitude: 23.81, longitude: 90.41, replyTo: privateId });
+    assert.deepEqual((await locationReply)[0].message.reply, { from: 'Alice', text: 'Private topic' });
+    assert.equal((await upload(outsider, 'Wrong peer', alice, privateId)).status, 409);
+    const fileReply = once(alice.socket, 'dm:message');
+    assert.equal((await upload(bob, 'Attachment reply', alice, privateId)).status, 201);
+    assert.deepEqual((await fileReply)[0].message.reply, { from: 'Alice', text: 'Private topic' });
+  });
+
+  it('applies private edits, reactions and deletions only to the participants and their retained quotes', async () => {
+    const alice = await guest('Alice', 'Engineering');
+    const bob = await guest('Bob', 'Engineering');
+    const outside = await guest('Charlie', 'Engineering');
+    const observed = [];
+    for (const event of ['message:edited', 'message:reaction-updated', 'message:deleted']) {
+      outside.socket.on(event, (data) => observed.push(data));
+    }
+    const { id } = await request(alice.socket, 'dm:send', { peerId: bob.guestId, text: 'Original' });
+    const { id: replyId } = await request(bob.socket, 'dm:send', { peerId: alice.guestId, text: 'Reply', replyTo: id });
+    await assert.rejects(request(bob.socket, 'message:edit', { peerId: alice.guestId, messageId: id, text: 'Forgery' }), /Unable to edit/);
+    await assert.rejects(request(outside.socket, 'message:reaction', { peerId: alice.guestId, messageId: id, emoji: '👍' }), /Unable to update/);
+    await assert.rejects(request(outside.socket, 'message:delete', { messageId: id }), /Unable to delete/);
+    const edited = once(bob.socket, 'message:edited');
+    await request(alice.socket, 'message:edit', { peerId: bob.guestId, messageId: id, text: 'Changed' });
+    assert.deepEqual((await edited)[0].quote, { from: 'Alice', text: 'Changed' });
+    const reacted = once(alice.socket, 'message:reaction-updated');
+    await request(bob.socket, 'message:reaction', { peerId: alice.guestId, messageId: id, emoji: '👍' });
+    assert.equal((await reacted)[0].reactions['👍'][0].name, 'Bob');
+    const history = async () => (await request(bob.socket, 'dm:history', { peerId: alice.guestId })).messages;
+    assert.deepEqual((await history())[1].reply, { from: 'Alice', text: 'Changed' });
+    const deleted = once(bob.socket, 'message:deleted');
+    await request(alice.socket, 'message:delete', { peerId: bob.guestId, messageId: id });
+    assert.equal((await deleted)[0].messageId, id);
+    assert.deepEqual((await history()).map(({ id, reply }) => ({ id, reply })), [{ id: replyId, reply: null }]);
+    await request(outside.socket, 'dm:history', { peerId: alice.guestId });
+    assert.deepEqual(observed, []);
+  });
+
+  it('records unanswered calls in both timelines and lets the recipient call back', async () => {
+    const alice = await guest('Alice', 'Engineering');
+    const bob = await guest('Bob', 'Engineering');
+    const missed = once(bob.socket, 'dm:message');
+    const { id } = await request(alice.socket, 'call:start', { peerId: bob.guestId, mode: 'audio' });
+    await request(alice.socket, 'call:end', { id });
+    const [{ message }] = await missed;
+    assert.equal(message.type, 'call');
+    assert.equal(message.reason, 'cancelled');
+    assert.equal(message.wasAnswered, false);
+    assert.deepEqual((await request(alice.socket, 'dm:history', { peerId: bob.guestId })).messages, [message]);
+    const callback = once(alice.socket, 'call:incoming');
+    const next = await request(bob.socket, 'call:start', { peerId: alice.guestId, mode: message.mode });
+    assert.notEqual(next.id, id);
+    assert.equal((await callback)[0].mode, 'audio');
+    await request(alice.socket, 'call:end', { id: next.id, reason: 'declined' });
   });
 
   it('publishes private attachments through the upload route and limits downloads to participants', async () => {
@@ -183,11 +366,11 @@ describe('HTTP and Socket.IO integration', function () {
     const outside = await guest('Outside', 'Design');
     await assert.rejects(request(alice.socket, 'sfu:join', { sessionId: 'room:chat:design', mode: 'video' }), /cannot join/);
     await request(bob.socket, 'presence:update', { status: 'dnd' });
-    await assert.rejects(request(alice.socket, 'call:start', { peerId: bob.socket.id, mode: 'video' }), /unavailable/);
+    await assert.rejects(request(alice.socket, 'call:start', { peerId: bob.guestId, mode: 'video' }), /unavailable/);
     await request(bob.socket, 'presence:update', { status: 'online' });
 
     const incoming = once(bob.socket, 'call:incoming');
-    const { id } = await request(alice.socket, 'call:start', { peerId: bob.socket.id, mode: 'video' });
+    const { id } = await request(alice.socket, 'call:start', { peerId: bob.guestId, mode: 'video' });
     assert.equal((await incoming)[0].id, id);
     await assert.rejects(request(alice.socket, 'sfu:join', { sessionId: 'private:' + id, mode: 'video' }), /cannot join/);
     await assert.rejects(request(outside.socket, 'call:accept', { id }), /no longer ringing/);

@@ -30,12 +30,20 @@ const directConversation = (sender, recipient) =>
   JSON.stringify(['dm', roomChannel(sender.room), ...[sender.guestId, recipient.guestId].sort()]);
 
 const sameRoomPeer = (users, sender, id) => {
-  const peer = typeof id === 'string' && users.getUser(id);
-  return sender && peer && peer.room === sender.room && peer.guestId !== sender.guestId ? peer : null;
+  if (!sender || typeof id !== 'string' || id === sender.guestId) return null;
+  return users.getUserList(sender.room).find((peer) => peer.guestId === id) || null;
 };
 
 const validCoordinates = (latitude, longitude) =>
   Number.isFinite(latitude) && Math.abs(latitude) <= 90 &&
   Number.isFinite(longitude) && Math.abs(longitude) <= 180;
 
-module.exports = { generateMessage, generateLocationMessage, generateFiles, roomChannel, directConversation, sameRoomPeer, validCoordinates };
+function messagePreview(message) {
+  const text = message.type === 'text' ? message.text :
+    message.type === 'file' ? message.filename :
+    message.type === 'location' ? 'Shared location' :
+    message.mode === 'video' ? 'Video call' : 'Audio call';
+  return { from: message.from, text: Array.from(text).slice(0, 160).join('') };
+}
+
+module.exports = { generateMessage, generateLocationMessage, generateFiles, roomChannel, directConversation, sameRoomPeer, validCoordinates, messagePreview };

@@ -27,8 +27,9 @@ Compose publishes the chat and media ports on loopback. The S3 gateway and manag
 ## How guests and conversations work
 
 - Anyone can discover an active group or join a group by name and view its retained history. Names identify guests in the UI. The signed browser session controls ownership of messages across reconnects and restarts. Rejoining with the same browser session and display name replaces the previous connection in that group.
-- Guests can message and call people who are currently in the same group. Direct messages and call summaries are available to the same browser guests when they return to the group. Clearing browser cookies or allowing the guest cookie to expire ends access to that guest's previous direct conversations.
-- Group and direct histories each retain the latest 50 messages for up to 30 days by default. Attachments are available while their message is retained. Group downloads require current membership, and direct downloads require one of the original guest sessions.
+- Guests in the same group can start a direct conversation or call. Established direct conversations accept messages and attachments while the other guest is offline. On returning to that group with the same signed browser session, the guest sees their conversations and unread counts. Calls require both guests to be online in the group.
+- Direct messages show **Sent** once saved and **Seen** with a timestamp once the recipient views the message in the focused conversation. Reading one conversation leaves unread counts in other conversations intact.
+- Group history retains the latest 50 messages by default. Direct history loads in pages and retains messages for up to 30 days by default, including unread messages beyond the first page. Attachments are available while their message is retained. Group downloads require current membership, and direct downloads require one of the original guest sessions.
 - The server processes messages and relays media. Group calls allow up to eight participants. One-to-one calls require the recipient to accept, and Do Not Disturb blocks incoming calls.
 
 ## Deployment

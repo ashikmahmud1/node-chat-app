@@ -1,7 +1,8 @@
 const config = require('../config');
-const { generateMessage, generateLocationMessage, roomChannel, validCoordinates } = require('../utils/message');
+const { generateMessage, generateLocationMessage, roomChannel, validCoordinates, messagePreview } = require('../utils/message');
 const { isRealString } = require('../utils/validation');
-const { reject } = require('./events');
+const { reject, validateReply } = require('./events');
+const { publishDirect, requireDirectConversation } = require('../services/direct-messages');
 
 const ALLOWED_REACTIONS = new Set(['👍', '❤️', '🎉', '🚀', '👀']);
 
@@ -10,6 +11,14 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     const user = users.getUser(socket.id);
     if (!user) reject('Join a group first.');
     return user;
+  };
+  const messageContext = (user, peerId) => {
+    if (peerId === undefined) {
+      const key = roomChannel(user.room);
+      return { key, publish: (event, payload) => io.to(key).emit(event, payload) };
+    }
+    const { key, recipient } = requireDirectConversation(users, messageStore, user, peerId);
+    return { key, publish: (event, payload) => publishDirect({ io, users, messageStore }, user, recipient, event, payload) };
   };
 
   const broadcastPresence = (room) => io.to(roomChannel(room)).emit('updateUserList', users.getUserList(room));
@@ -20,6 +29,7 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     messages,
     historyLimit: messageStore.limit,
     users: users.getUserList(user.room),
+    directThreads: messageStore.getDirectThreads(user),
     participants: sfuService.getSessionParticipants(`room:${roomChannel(user.room)}`),
   });
 
@@ -38,6 +48,7 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     if (previousConnection) io.sockets.sockets.get(previousConnection)?.disconnect(true);
     socket.join(roomChannel(room));
     const user = users.addUser(socket.id, name, room, status, socket.data.guestId);
+    messageStore.rememberDirectName(user);
     const state = snapshot(user, messages);
     // A single snapshot establishes the context before live events arrive.
     socket.emit('room:state', state);
@@ -79,48 +90,56 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     return user;
   });
 
-  on('createMessage', ({ text }) => {
+  on('createMessage', ({ text, replyTo }) => {
     const user = requireUser();
     if (!isRealString(text, config.limits.maxMessageLength)) reject('Enter a message between 1 and 2,000 characters.');
     const channel = roomChannel(user.room);
-    const message = messageStore.addMessage(channel, { ...generateMessage(user.name, text.trim()), authorId: user.guestId });
+    const message = messageStore.addMessage(channel, {
+      ...generateMessage(user.name, text.trim()),
+      ...validateReply(messageStore, channel, replyTo),
+      authorId: user.guestId,
+    });
     socket.to(channel).emit('typing:update', { userId: socket.id, isTyping: false });
     io.to(channel).emit('newMessage', message);
     return { id: message.id };
   });
 
-  on('createLocationMessage', ({ latitude, longitude }) => {
+  on('createLocationMessage', ({ latitude, longitude, replyTo }) => {
     const user = requireUser();
     if (!validCoordinates(latitude, longitude)) reject('Invalid location.');
     const channel = roomChannel(user.room);
-    const message = messageStore.addMessage(channel, { ...generateLocationMessage(user.name, latitude, longitude), authorId: user.guestId });
+    const message = messageStore.addMessage(channel, {
+      ...generateLocationMessage(user.name, latitude, longitude),
+      ...validateReply(messageStore, channel, replyTo),
+      authorId: user.guestId,
+    });
     io.to(channel).emit('newMessage', message);
     return { id: message.id };
   });
 
-  on('message:edit', ({ messageId, text }) => {
+  on('message:edit', ({ peerId, messageId, text }) => {
     const user = requireUser();
     if (typeof messageId !== 'string' || !isRealString(text, config.limits.maxMessageLength)) reject('Invalid edit request.');
-    const channel = roomChannel(user.room);
-    const updated = messageStore.editMessage(channel, messageId, user.guestId, text.trim());
+    const { key, publish } = messageContext(user, peerId);
+    const updated = messageStore.editMessage(key, messageId, user.guestId, text.trim());
     if (!updated) reject('Unable to edit message.');
-    io.to(channel).emit('message:edited', { messageId, text: updated.text, editedAt: updated.editedAt });
+    publish('message:edited', { messageId, text: updated.text, editedAt: updated.editedAt, quote: messagePreview(updated) });
   });
 
-  on('message:delete', ({ messageId }) => {
+  on('message:delete', ({ peerId, messageId }) => {
     const user = requireUser();
-    const channel = roomChannel(user.room);
-    if (typeof messageId !== 'string' || !messageStore.deleteMessage(channel, messageId, user.guestId)) reject('Unable to delete message.');
-    io.to(channel).emit('message:deleted', { messageId });
+    const { key, publish } = messageContext(user, peerId);
+    if (typeof messageId !== 'string' || !messageStore.deleteMessage(key, messageId, user.guestId)) reject('Unable to delete message.');
+    publish('message:deleted', { messageId });
   });
 
-  on('message:reaction', ({ messageId, emoji }) => {
+  on('message:reaction', ({ peerId, messageId, emoji }) => {
     const user = requireUser();
     if (typeof messageId !== 'string' || !ALLOWED_REACTIONS.has(emoji)) reject('Invalid reaction.');
-    const channel = roomChannel(user.room);
-    const result = messageStore.toggleReaction(channel, messageId, emoji, user);
+    const { key, publish } = messageContext(user, peerId);
+    const result = messageStore.toggleReaction(key, messageId, emoji, user);
     if (!result) reject('Unable to update reaction.');
-    io.to(channel).emit('message:reaction-updated', result);
+    publish('message:reaction-updated', result);
   });
 
   on('typing:update', ({ isTyping }) => {

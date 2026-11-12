@@ -10,7 +10,7 @@
   --bg-surface: #ffffff;
   --bg-chat: #f8fafc;
   --bg-chat-bubble: #ffffff;
-  --bg-chat-bubble-self: linear-gradient(135deg, #4f46e5, #6366f1);
+  --bg-chat-bubble-self: #245bc9;
   --primary: #4f46e5;
   --primary-hover: #4338ca;
   --primary-subtle: #eef2ff;
@@ -660,6 +660,10 @@ button:disabled {
   background: var(--warning);
 }
 
+.status-offline {
+  background-color: #64748b;
+}
+
 .status-dnd {
   background: var(--danger);
 }
@@ -1293,6 +1297,9 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 16px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  flex-wrap: wrap;
   box-shadow: 0 20px 45px -10px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
   z-index: 10000;
   animation: slideDownIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
@@ -1348,7 +1355,8 @@ button:disabled {
 .incoming-call-card__meta {
   display: flex;
   flex-direction: column;
-  min-width: 140px;
+  min-width: 0;
+  max-width: min(180px, 55vw);
 }
 
 .incoming-call-card__meta h4 {
@@ -1356,6 +1364,7 @@ button:disabled {
   font-weight: 700;
   color: #f8fafc;
   margin: 0 0 2px 0;
+  overflow-wrap: anywhere;
 }
 
 .incoming-call-subtitle {
@@ -1404,16 +1413,18 @@ button:disabled {
 
 /* Personal 1-to-1 Call Stage (Unified Inline Canvas Header) */
 .personal-call-stage {
-  padding: 12px 24px;
-  background: linear-gradient(135deg, #090d16, #1e293b);
+  padding: 14px 24px;
+  background: linear-gradient(115deg, #101a30, #182c4d);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
 }
 
 .personal-call-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
 }
 
 .personal-call-header__info {
@@ -1423,6 +1434,30 @@ button:disabled {
   font-size: 14px;
   font-weight: 600;
   color: #f8fafc;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.personal-call-header__identity {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+#personal-call-kind {
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .personal-call-header__controls {
@@ -1578,7 +1613,7 @@ button:disabled {
   list-style-type: none;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   margin: 0;
 }
 
@@ -1606,12 +1641,10 @@ button:disabled {
 }
 
 .message__content {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-color);
-  border-radius: 0 var(--radius-md) var(--radius-md) var(--radius-md);
-  padding: 10px 14px;
-  box-shadow: var(--shadow-sm);
-  min-width: 200px;
+  background: #edf1f7;
+  border-radius: 6px 18px 18px 18px;
+  padding: 9px 13px;
+  min-width: 0;
   position: relative;
 }
 
@@ -1648,6 +1681,7 @@ button:disabled {
   margin: 0;
   line-height: 1.5;
   word-break: break-word;
+  white-space: pre-wrap;
 }
 
 /* Distinct Personal Outgoing Chat Bubble */
@@ -1658,10 +1692,8 @@ button:disabled {
 
 .message--outgoing .message__content {
   background: var(--bg-chat-bubble-self);
-  border: none;
   color: #ffffff;
-  border-radius: var(--radius-md) 0 var(--radius-md) var(--radius-md);
-  box-shadow: 0 3px 10px rgba(79, 70, 229, 0.25);
+  border-radius: 18px 6px 18px 18px;
 }
 
 .message--outgoing .message__title h4 {
@@ -1675,6 +1707,31 @@ button:disabled {
 
 .message--outgoing .message__body p {
   color: #ffffff;
+}
+
+.direct-history-actions {
+  display: flex;
+  justify-content: center;
+  padding: 8px 14px 0;
+}
+
+#load-older-direct {
+  color: var(--primary-text);
+  background: var(--primary-subtle);
+  border-radius: var(--radius-full);
+  min-height: 34px;
+}
+
+#load-older-direct:hover {
+  background: #e0e7ff;
+}
+
+.direct-message-receipt {
+  display: block;
+  margin-block-start: 4px;
+  color: #eff6ff;
+  font-size: 11px;
+  text-align: end;
 }
 
 /* Attachment Cards (File & Location) */
@@ -1800,19 +1857,127 @@ button:disabled {
   color: rgba(255, 255, 255, 0.88);
 }
 
-/* Message Hover Toolbar & Reactions */
-.message-toolbar {
+.call-again-btn {
+  align-self: flex-start;
+  margin-block-start: 7px;
+  min-height: 30px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  color: var(--primary-text);
+  background: #fff;
+}
+
+.call-again-btn:hover {
+  color: var(--primary-text);
+  background: var(--primary-subtle);
+}
+
+.reply-composer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  margin: 0 24px 8px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border-inline-start: 3px solid var(--primary);
+  background: var(--primary-subtle);
+  font-size: 13px;
 }
 
-.message--outgoing .message-toolbar {
-  border-top-color: rgba(255, 255, 255, 0.18);
+.reply-composer[hidden] {
+  display: none;
+}
+
+.reply-composer > div {
+  min-width: 0;
+}
+
+.reply-composer__label,
+.reply-composer__text,
+.message-quote strong,
+.message-quote span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-composer__text {
+  color: var(--text-secondary);
+}
+
+.message-quote {
+  display: block;
+  width: 100%;
+  max-width: 32ch;
+  margin-block-end: 6px;
+  padding: 5px 8px;
+  border-inline-start: 2px solid var(--primary);
+  text-align: start;
+  color: var(--text-secondary);
+  background: rgba(15, 23, 42, 0.07);
+  font-size: 12px;
+}
+
+.message-quote:disabled {
+  opacity: 0.85;
+}
+
+.message-quote:hover:not(:disabled) {
+  color: var(--text-main);
+  background: rgba(15, 23, 42, 0.13);
+}
+
+.message--outgoing .message-quote {
+  border-inline-start-color: #dbeafe;
+  color: #fff;
+  background: rgba(15, 23, 42, 0.24);
+}
+
+.message--outgoing .message-quote:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.message-toolbar {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.message-reactions summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  min-height: 26px;
+  width: fit-content;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.message-reactions summary::-webkit-details-marker {
+  display: none;
+}
+
+.message--outgoing .message-reactions summary {
+  color: #fff;
+}
+
+.message-reactions summary:hover {
+  background: rgba(100, 116, 139, 0.17);
+}
+
+.reaction-summary:empty {
+  display: none;
+}
+
+.reaction-summary {
+  font-size: 11px;
 }
 
 .reaction-bar {
@@ -1860,7 +2025,8 @@ button:disabled {
 .msg-action-btn {
   background: transparent;
   color: var(--text-muted);
-  padding: 2px 6px;
+  padding: 3px 7px;
+  min-height: 26px;
   font-size: 11px;
   border-radius: var(--radius-xs);
 }
@@ -1931,23 +2097,27 @@ button:disabled {
 
 .chat__footer form {
   flex-grow: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   position: relative;
 }
 
-.chat__footer input[type="text"] {
+.chat__footer textarea {
   width: 100%;
+  max-height: 8rem;
+  resize: none;
   border: 1px solid #cbd5e1;
-  border-radius: var(--radius-full);
+  border-radius: 20px;
   padding: 10px 48px 10px 18px;
   font-size: 14px;
+  line-height: 20px;
   background: #f8fafc;
   color: var(--text-main);
-  transition: all var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-.chat__footer input[type="text"]:focus {
+.chat__footer textarea:focus {
   outline: none;
   background: #ffffff;
   border-color: var(--primary);
@@ -1957,6 +2127,7 @@ button:disabled {
 .btn-composer-send {
   position: absolute;
   right: 6px;
+  bottom: 5px;
   width: 32px;
   height: 32px;
   border-radius: 50%;
@@ -2026,6 +2197,10 @@ button:disabled {
   .btn-composer-secondary span,
   .header-chat-subtitle {
     display: none;
+  }
+
+  .header-chat-subtitle--unavailable {
+    display: block;
   }
 
   .chat__footer {
@@ -2156,8 +2331,7 @@ button:disabled {
 }
 
 .message__content {
-  min-width: min(200px, 100%);
-  max-width: 100%;
+  max-width: calc(100% - 48px);
   overflow-wrap: anywhere;
 }
 
@@ -2214,10 +2388,22 @@ button:disabled {
   }
 
   .message__content {
-    min-width: 0;
+    max-width: calc(100% - 44px);
   }
 
-  .reaction-btn, .msg-action-btn {
-    min-height: 28px;
+  .reaction-btn, .msg-action-btn, .message-reactions summary {
+    min-height: 32px;
+  }
+
+  .reply-composer {
+    margin-inline: 14px;
+  }
+
+  .personal-call-stage {
+    padding-inline: 14px;
+  }
+
+  .chat__footer textarea {
+    font-size: 16px;
   }
 }

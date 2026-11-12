@@ -18,7 +18,7 @@ class CallsService {
     const recipient = sameRoomPeer(this.users, caller, peerId);
     if (!recipient) reject('This person is no longer in your group.');
     if (!['audio', 'video'].includes(mode)) reject('Invalid call mode.');
-    if (recipient.status === 'dnd' || [socketId, peerId].some((id) => this.bySocket.has(id) || this.sfu.hasPeer(id))) {
+    if (recipient.status === 'dnd' || [socketId, recipient.id].some((id) => this.bySocket.has(id) || this.sfu.hasPeer(id))) {
       reject('One of the participants is unavailable.');
     }
 
@@ -26,8 +26,8 @@ class CallsService {
     call.timer = setTimeout(() => this.finish(socketId, call.id, 'no_answer'), 25000);
     call.timer.unref();
     this.bySocket.set(socketId, call);
-    this.bySocket.set(peerId, call);
-    this.io.to(peerId).emit('call:incoming', { id: call.id, caller, mode });
+    this.bySocket.set(recipient.id, call);
+    this.io.to(recipient.id).emit('call:incoming', { id: call.id, caller, mode });
     return { id: call.id };
   }
 
@@ -79,6 +79,7 @@ class CallsService {
     try {
       saveDirectMessage(this, call.caller, call.recipient, {
         ...result,
+        wasAnswered: Boolean(call.acceptedAt),
         from: call.caller.name,
         type: 'call',
         mode: call.mode,

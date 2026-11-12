@@ -8,8 +8,8 @@ const config = require('../config');
 const { s3, uploadS3 } = require('../middlewares/file-upload-s3');
 const { upload } = require('../middlewares/file-upload');
 const { hasAllowedOrigin, UUID } = require('../services/guest-session');
-const { generateFiles, roomChannel, sameRoomPeer } = require('../utils/message');
-const { saveDirectMessage } = require('../services/direct-messages');
+const { directConversation, generateFiles, roomChannel } = require('../utils/message');
+const { findDirectPeer, saveDirectMessage } = require('../services/direct-messages');
 const { logger } = require('../utils/logger');
 
 const useS3 = config.storageType === 's3';
@@ -31,31 +31,37 @@ function createFileHandlers({ users, messageStore, guestSession, io }) {
       return res.status(403).json({ error: 'Join a group to share files.' });
     }
 
-    if (req.get('X-Chat-Channel') !== encodeURIComponent(roomChannel(sender.room))) {
+    const channel = roomChannel(sender.room);
+    if (req.get('X-Chat-Channel') !== encodeURIComponent(channel)) {
       return res.status(409).json({ error: 'The group changed before the upload started.' });
     }
     const peerId = req.get('X-Chat-Peer');
-    const recipient = peerId ? sameRoomPeer(users, sender, peerId) : null;
-    if (peerId && !recipient) return res.status(409).json({ error: 'This person is no longer in your group.' });
+    const recipient = peerId ? findDirectPeer(users, messageStore, sender, peerId) : null;
+    if (peerId && !recipient) return res.status(409).json({ error: 'This direct conversation is unavailable.' });
+    const conversation = recipient ? directConversation(sender, recipient) : channel;
+    const replyTo = req.get('X-Chat-Reply-To');
+    const replyUnavailable = () => replyTo !== undefined &&
+      (!UUID.test(replyTo) || !messageStore.getMessage(conversation, replyTo));
+    if (replyUnavailable()) return res.status(409).json({ error: 'The message you are replying to is unavailable.' });
     if (activeUploads.has(sender.id) || activeUploads.size >= 20) {
       return res.status(429).json({ error: 'An upload is already in progress or the server is busy.' });
     }
 
     const id = randomUUID();
     req.attachmentId = id;
-    const channel = roomChannel(sender.room);
     activeUploads.add(sender.id);
     try {
       messageStore.reserveAttachment({ id, name: '', room: channel, sender: guestId, recipient: recipient?.guestId ?? null });
       await new Promise((resolve, reject) => readUpload(req, res, (error) => error ? reject(error) : resolve()));
       if (!req.file || req.aborted) return res.status(400).json({ error: 'Choose a file to upload.' });
-      if (users.getUser(sender.id) !== sender || (recipient && users.getUser(recipient.id) !== recipient)) {
+      if (users.getUser(sender.id) !== sender) {
         return res.status(409).json({ error: 'The conversation changed before the upload finished.' });
       }
+      if (replyUnavailable()) return res.status(409).json({ error: 'The message you are replying to is unavailable.' });
       const filename = Array.from(req.file.originalname.replace(/[\u0000-\u001f\u007f]/g, '').trim()).slice(0, 180).join('');
       if (!filename) return res.status(400).json({ error: 'The file needs a name.' });
       messageStore.setAttachmentName(id, filename);
-      const message = generateFiles(sender.name, id, filename);
+      const message = { ...generateFiles(sender.name, id, filename), ...(replyTo ? { replyTo } : {}) };
       if (recipient) saveDirectMessage({ io, users, messageStore }, sender, recipient, message);
       else io.to(channel).emit('newMessage', messageStore.addMessage(channel, { ...message, authorId: guestId }));
       return res.status(201).json({ id });

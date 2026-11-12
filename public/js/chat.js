@@ -8,6 +8,7 @@ $(function () {
     return;
   }
   const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+  const receiptTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
   let guestId;
   let ready = false;
   let switching = false;
@@ -82,7 +83,7 @@ $(function () {
   let personalCallTimerTimeout = null;
   let activeChatMode = 'group';
   let activePrivateUserId = '';
-  let activePrivateUserName = '';
+  let activePrivatePeer = null;
   let currentRoomName = params.room;
   let currentUserName = params.name;
   let currentUserStatus = 'online';
@@ -104,7 +105,11 @@ $(function () {
   // Personal message history & unread counters
   var user_message_dictionary = Object.create(null);
   var unread_counts = Object.create(null);
-  var room_users_map = Object.create(null);
+  let directPeers = Object.create(null);
+  let onlineUsers = [];
+  const directThreads = new Map();
+  const directHistoryCursors = new Map();
+  const loadedDirectHistories = new Set();
 
   const calling_audio = document.getElementById('audioCalling');
   const soundSettingsKey = 'nexus_sound_preferences';
@@ -248,18 +253,6 @@ $(function () {
     }
   }
 
-  function incrementUnreadBadge(userId) {
-    if (!userId) return;
-    unread_counts[userId] = (unread_counts[userId] || 0) + 1;
-    updateUnreadBadgeDOM(userId);
-  }
-
-  function clearUnreadBadge(userId) {
-    if (!userId) return;
-    unread_counts[userId] = 0;
-    updateUnreadBadgeDOM(userId);
-  }
-
   function incrementGroupUnreadBadge(roomName) {
     if (!roomName) return;
     groupUnreadCounts[roomName] = (groupUnreadCounts[roomName] || 0) + 1;
@@ -296,7 +289,7 @@ $(function () {
     if (activeChatMode === 'personal' && activePrivateUserId) {
       var personalMsgs = user_message_dictionary[activePrivateUserId] || [];
       if (personalMsgs.length === 0) {
-        $('#personal-empty-title').text('Direct Message with ' + activePrivateUserName);
+        $('#personal-empty-title').text('Direct Message with ' + activePrivatePeer.name);
         $('#personal-empty-desc').text('Send a message to start the conversation.');
         $('#personal-empty-state').removeClass('hide-element');
       } else {
@@ -373,6 +366,7 @@ $(function () {
     $('#chat__sidebar').toggleClass('hide-show-people', open);
     $('#show-people').attr('aria-expanded', String(open)).toggleClass('change-button-position', open);
     $('#change-arrow').toggleClass('fa-xmark', open).toggleClass('fa-bars', !open);
+    if (!open) scheduleDirectRead();
   }
 
   async function selectGroupFromSidebar(targetRoom) {
@@ -409,16 +403,69 @@ $(function () {
      ========================================================================== */
 
   const directDrafts = new Map();
+  const pendingDirectHistories = new Map();
+  const directReadsInFlight = new Map();
+  let directReadTimer;
+  const replyTargets = { group: null, personal: null };
+
+  function summarizeMessage(message) {
+    const text = message.type === 'text' ? message.text :
+      message.type === 'file' ? message.filename :
+      message.type === 'location' ? 'Shared location' :
+      message.mode === 'video' ? 'Video call' : 'Audio call';
+    return { from: message.from, text: Array.from(text).slice(0, 160).join('') };
+  }
+
+  function directMessageSubtitle(user) {
+    const latest = directThreads.get(user.guestId)?.latest;
+    if (!latest) return { online: 'Online', offline: 'Offline', away: 'Away', dnd: 'Do Not Disturb' }[user.status];
+    return (latest.authorId === guestId ? 'You: ' : '') + latest.text;
+  }
+
+  function updateDirectThread(peer, thread) {
+    const id = peer.guestId;
+    directThreads.set(id, { peer, ...thread });
+    unread_counts[id] = thread.unread;
+    const user = directPeers[id];
+    if (!user) {
+      renderDirectSidebar();
+      return;
+    }
+    if (!user.id && user.name !== peer.name && peer.name) {
+      renderDirectSidebar();
+      return;
+    }
+    updateUnreadBadgeDOM(id);
+    $('#users li.user-list').filter((_, row) => row.dataset.userId === id)
+      .find('.user-secondary-status').text(directMessageSubtitle(user));
+  }
+
+  function setReplyTarget(mode, target) {
+    replyTargets[mode] = target;
+    const composer = $(mode === 'personal' ? '#private-reply-composer' : '#group-reply-composer');
+    composer.prop('hidden', !target);
+    composer.find('.reply-composer__label').text(target ? 'Replying to ' + target.from : '');
+    composer.find('.reply-composer__text').text(target?.text || '');
+  }
+
+  $('#group-reply-composer .reply-composer__cancel').on('click', () => {
+    setReplyTarget('group', null);
+    $('#message-input').trigger('focus');
+  });
+  $('#private-reply-composer .reply-composer__cancel').on('click', () => {
+    setReplyTarget('personal', null);
+    $('#private-message-input').trigger('focus');
+  });
   function saveDirectDraft() {
-    const peer = room_users_map[activePrivateUserId];
-    if (peer) directDrafts.set(peer.guestId, $('#private-message-input').val());
+    if (activePrivatePeer) directDrafts.set(activePrivatePeer.guestId, $('#private-message-input').val());
   }
 
   function switchToGroupChatCanvas() {
     saveDirectDraft();
+    setReplyTarget('personal', null);
     activeChatMode = 'group';
     activePrivateUserId = '';
-    activePrivateUserName = '';
+    activePrivatePeer = null;
 
     clearGroupUnreadBadge(currentRoomName);
 
@@ -433,7 +480,7 @@ $(function () {
     $('#header-room-title').text('# ' + currentRoomName);
     $('#sidebar-room-name').text('# ' + currentRoomName);
     $('#header-status-dot').attr('class', 'room-status-dot status-online');
-    $('#header-chat-subtitle').text('Group chat');
+    $('#header-chat-subtitle').text('Group chat').removeClass('header-chat-subtitle--unavailable');
     $('#back-to-group-btn').addClass('hide-element');
 
     // Toggle Header Call Action Buttons
@@ -443,6 +490,7 @@ $(function () {
     // Toggle Canvas Views
     $('#personal-chat-canvas').addClass('hide-element');
     $('#group-chat-canvas').removeClass('hide-element');
+    resizeComposer(document.getElementById('message-input'));
 
     updateSidebarActiveHighlights();
     updateEmptyStates();
@@ -455,22 +503,19 @@ $(function () {
   }
 
   function switchToPersonalChatCanvas(userId, userName) {
-    if (!userId || userId === socket.id) return;
+    if (!userId || userId === guestId) return;
 
-    var peerUser = room_users_map[userId];
+    var peerUser = directPeers[userId];
     var resolvedName = userName || (peerUser && peerUser.name) || 'Personal Chat';
     var peerStatus = (peerUser && peerUser.status) || 'online';
-    var statusLabel =
-      peerStatus === 'dnd' ? 'Do Not Disturb' : peerStatus === 'away' ? 'Away' : 'Active Now';
-
     saveDirectDraft();
+    if (peerUser.guestId !== activePrivatePeer?.guestId) setReplyTarget('personal', null);
     $('#private-message-input').val(directDrafts.get(peerUser?.guestId) || '');
     activeChatMode = 'personal';
     activePrivateUserId = userId;
-    activePrivateUserName = resolvedName;
+    activePrivatePeer = peerUser;
 
     $('#private-typing-indicator').addClass('hide-element').text('');
-    clearUnreadBadge(userId);
 
     // Update Header for Personal Mode
     $('#header-context-avatar')
@@ -483,8 +528,7 @@ $(function () {
       .attr('class', 'header-avatar-status-dot status-' + peerStatus);
 
     $('#header-room-title').text(resolvedName);
-    $('#header-status-dot').attr('class', 'room-status-dot status-' + peerStatus);
-    $('#header-chat-subtitle').text('Direct Message · ' + statusLabel);
+    showDirectPresence(peerStatus);
     $('#back-to-group-label').text('Back to #' + currentRoomName);
     $('#back-to-group-btn').removeClass('hide-element');
 
@@ -495,13 +539,33 @@ $(function () {
     // Toggle Canvas Views
     $('#group-chat-canvas').addClass('hide-element');
     $('#personal-chat-canvas').removeClass('hide-element');
+    resizeComposer(document.getElementById('private-message-input'));
 
     renderPrivateMessages(userId);
+    updateDirectAvailability();
     updateSidebarActiveHighlights();
     updateEmptyStates();
     applySearchFilter();
 
     setSidebar(false);
+  }
+
+  function showDirectPresence(status) {
+    const labels = { online: 'Active now', offline: 'Offline', away: 'Away', dnd: 'Do Not Disturb' };
+    $('#header-status-dot').attr('class', 'room-status-dot status-' + status);
+    $('#header-avatar-status-dot').attr('class', 'header-avatar-status-dot status-' + status);
+    $('#header-chat-subtitle').text(labels[status]).toggleClass('header-chat-subtitle--unavailable', status === 'offline' || status === 'dnd');
+  }
+
+  function updateDirectAvailability() {
+    const peer = directPeers[getActivePrivateUserId()];
+    const canSend = ready && Boolean(peer);
+    const canCall = canSend && Boolean(peer.id) && peer.status !== 'dnd' && !directCall && !roomCall;
+    $('#private-send-btn, #private-send-file-click, #private-send-location, #private_messages_list .message-toolbar button')
+      .each((_, button) => { button.disabled = !canSend || button.getAttribute('aria-busy') === 'true'; });
+    $('#audio-call, #video-call, #private_messages_list .call-again-btn').prop('disabled', !canCall);
+    $('#direct-history-actions').toggleClass('hide-element', !directHistoryCursors.has(peer?.guestId));
+    $('#load-older-direct').prop('disabled', !canSend || pendingDirectHistories.has(peer?.guestId));
   }
 
   $('#back-to-group-btn').on('click', function (e) {
@@ -633,6 +697,7 @@ $(function () {
     if (directCall) return showError('End your direct call before joining a group call.');
     const call = { sessionId: roomSessionId(), media: null };
     roomCall = call;
+    updateDirectAvailability();
     sounds.stopMessage();
     sounds.stopPreview();
     $('#join-room-audio-btn, #join-room-video-btn').prop('disabled', true);
@@ -710,6 +775,7 @@ $(function () {
     if (!roomCall) return;
     if (notify && socket.connected) send('sfu:leave', { sessionId: roomCall.sessionId });
     roomCall = null;
+    updateDirectAvailability();
     sfu.close();
     stopTracks(roomLocalStream);
     stopTracks(roomScreenStream);
@@ -785,6 +851,7 @@ $(function () {
     $(list + ' > li').each(function () {
       $(this).toggleClass('hide-element', !$(this).find('.message__title, .message__body').text().toLowerCase().includes(query));
     });
+    scheduleDirectRead();
   }
 
   function setMobileSearch(open) {
@@ -798,73 +865,81 @@ $(function () {
   $('#room-message-search').on('input', applySearchFilter);
   $('#clear-search-btn').on('click', () => $('#room-message-search').val('').trigger('input').trigger('focus'));
 
-  function renderPrivateMessages(userId) {
-    var $list = $('#private_messages_list');
-    $list.empty();
+  const messageTemplates = {
+    text: '#message-template',
+    file: '#file-message-template',
+    location: '#location-message-template',
+    call: '#call-message-template',
+  };
 
-    var messages = user_message_dictionary[userId] || [];
-    for (var i = 0; i < messages.length; i++) {
-      var msg = messages[i];
-      var isMine = msg.authorId === guestId;
-      var initials = getInitials(msg.from);
-      var avatarStyle = getAvatarStyle(msg.from);
-      var extraClass = isMine ? 'message--outgoing' : 'message--incoming';
-      var template;
-      var html;
+  function buildMessage(message, peerId) {
+    const isMine = message.authorId === guestId;
+    const view = {
+      from: message.from,
+      text: message.text,
+      url: message.url,
+      filename: message.filename,
+      createdAt: time.format(message.createdAt),
+      initials: getInitials(message.from),
+      extraClass: [
+        peerId && message.type === 'text' ? 'message--private' : '',
+        isMine ? 'message--outgoing' : peerId ? 'message--incoming' : '',
+      ].join(' '),
+    };
 
-      if (msg.type === 'location') {
-        template = $('#location-message-template').html();
-        html = Mustache.render(template, {
-          from: msg.from,
-          url: msg.url,
-          createdAt: time.format(msg.createdAt),
-          initials: initials,
-          extraClass: extraClass,
-        });
-      } else if (msg.type === 'file') {
-        template = $('#file-message-template').html();
-        html = Mustache.render(template, {
-          from: msg.from,
-          url: msg.url,
-          filename: msg.filename,
-          createdAt: time.format(msg.createdAt),
-          initials: initials,
-          extraClass: extraClass,
-        });
-      } else if (msg.type === 'call') {
-        const video = msg.mode === 'video';
-        const duration = msg.wasConnected ? formatCallDuration(msg.durationSec) :
-          ({ declined: 'Declined', no_answer: 'No answer', left: 'Participant left', failed: 'Connection failed' })[msg.reason] || 'Cancelled';
-        template = $('#call-message-template').html();
-        html = Mustache.render(template, {
-          from: msg.from,
-          callTitle: video ? 'Video call' : 'Audio call',
-          callDuration: duration,
-          callIcon: video ? 'fa-solid fa-video' : 'fa-solid fa-phone',
-          callStatusClass: msg.wasConnected ? 'call-status--completed' : 'call-status--missed',
-          createdAt: time.format(msg.createdAt),
-          initials: initials,
-          extraClass: extraClass,
-        });
-      } else {
-        template = $('#private-message-template').html();
-        html = Mustache.render(template, {
-          text: msg.text,
-          from: msg.from,
-          createdAt: time.format(msg.createdAt),
-          initials: initials,
-          extraClass: extraClass,
-        });
-      }
-      var $item = $(html);
-      $item.find('.message__avatar').attr('style', avatarStyle);
-      $list.append($item);
+    if (message.type === 'call') {
+      const video = message.mode === 'video';
+      const type = video ? 'video call' : 'audio call';
+      const missed = !isMine && !message.wasAnswered && !message.wasConnected &&
+        ['no_answer', 'cancelled', 'left'].includes(message.reason);
+      const outcomes = { declined: 'Declined', no_answer: 'No answer', left: 'Participant left', failed: 'Connection failed' };
+      const duration = message.wasConnected ? formatCallDuration(message.durationSec) : outcomes[message.reason] || 'Cancelled';
+      Object.assign(view, {
+        callTitle: missed ? 'Missed ' + type : (isMine ? 'Outgoing ' : 'Incoming ') + type,
+        callAction: isMine ? 'Call again' : 'Call back',
+        callDuration: missed ? 'Unanswered' : duration,
+        callIcon: video ? 'fa-solid fa-video' : 'fa-solid fa-phone',
+        callStatusClass: message.wasConnected ? 'call-status--completed' : 'call-status--missed',
+      });
     }
-    if (!directCall) {
-      $list.scrollTop($list.prop('scrollHeight') || 0);
+
+    const $item = $(Mustache.render($(messageTemplates[message.type]).html(), view));
+    $item.find('.message__avatar').attr('style', getAvatarStyle(message.from));
+    if (message.type === 'call') {
+      $item.find('.call-again-btn').on('click', () => startDirectCall(message.mode));
+    }
+    decorateMessage($item, message, peerId);
+    if (peerId && isMine && message.type !== 'call') {
+      const $receipt = $('<span class="direct-message-receipt"></span>');
+      updateReceiptLabel($receipt, message.readAt);
+      $item.find('.message__content').append($receipt);
+    }
+    return $item;
+  }
+
+  function renderPrivateMessages(userId, preserveScroll = false) {
+    const $list = $('#private_messages_list');
+    const list = $list[0];
+    const bottomOffset = list.scrollHeight - list.scrollTop;
+    $list.empty();
+    for (const message of user_message_dictionary[userId] || []) {
+      $list.append(buildMessage(message, userId));
     }
     updateEmptyStates();
     applySearchFilter();
+    list.scrollTop = preserveScroll ? list.scrollHeight - bottomOffset : list.scrollHeight;
+    scheduleDirectRead();
+  }
+
+  function appendDirectMessage(userId, message) {
+    const $list = $('#private_messages_list');
+    const list = $list[0];
+    const follow = message.authorId === guestId || list.scrollHeight - list.scrollTop - list.clientHeight < 100;
+    $list.append(buildMessage(message, userId));
+    updateEmptyStates();
+    applySearchFilter();
+    if (follow) list.scrollTop = list.scrollHeight;
+    scheduleDirectRead();
   }
 
   $('#dismiss-alert').on('click', function (e) {
@@ -873,12 +948,16 @@ $(function () {
   });
 
   // Reactions & message toolbar builder
-  function renderMessageReactions($li, messageId, reactions) {
+  function renderMessageReactions($li, messageId, reactions, peerId) {
     var $bar = $li.find('.reaction-bar');
     if (!$bar.length) return;
     $bar.empty();
 
     var reactionMap = reactions || {};
+    const counts = QUICK_REACTIONS.filter((emoji) => reactionMap[emoji]?.length)
+      .map((emoji) => emoji + ' ' + reactionMap[emoji].length).join(' ');
+    $li.find('summary').attr('aria-label', counts ? 'Reactions, ' + counts : 'Add reaction');
+    $li.find('.reaction-summary').text(counts);
     QUICK_REACTIONS.forEach(function (emoji) {
       var usersList = Array.isArray(reactionMap[emoji]) ? reactionMap[emoji] : [];
       var count = usersList.length;
@@ -886,20 +965,83 @@ $(function () {
 
       var $btn = $('<button type="button" class="reaction-btn"></button>');
       if (isMine) $btn.addClass('active-reaction');
-      $btn.attr('aria-pressed', String(isMine));
+      $btn.attr({ 'aria-pressed': String(isMine), 'aria-label': 'React with ' + emoji });
       $btn.text(count > 0 ? emoji + ' ' + count : emoji);
       if (count > 0) {
         $btn.attr('title', usersList.map((reaction) => reaction.name).join(', '));
       }
       $btn.on('click', function (e) {
         e.preventDefault();
+        const picker = $bar.closest('details').prop('open', false);
+        picker.find('summary').trigger('focus');
         send('message:reaction', {
           messageId: messageId,
           emoji: emoji,
+          peerId,
         });
       });
       $bar.append($btn);
     });
+  }
+
+  function updateQuote($quote, reply) {
+    $quote.prop('disabled', !reply);
+    $quote.find('strong').text(reply?.from || 'Message unavailable');
+    $quote.find('span').text(reply?.text || '');
+  }
+
+  function decorateMessage($item, message, peerId) {
+    $item.attr('data-message-id', message.id);
+    if (message.edited) $item.find('.user-time').after('<span class="edited-tag">(edited)</span>');
+
+    const mode = peerId ? 'personal' : 'group';
+    const list = peerId ? '#private_messages_list' : '#messages';
+    if (message.replyTo) {
+      const $quote = $('<button type="button" class="message-quote"><strong></strong><span></span></button>')
+        .attr('data-reply-to', message.replyTo);
+      updateQuote($quote, message.reply);
+      $quote.on('click', () => {
+        const target = $(list + ' > li').filter((_, row) => row.dataset.messageId === message.replyTo)[0];
+        if (!target) {
+          if (peerId && directHistoryCursors.has(peerId)) showError('Load older messages to jump to the original.');
+          return;
+        }
+        if (target.classList.contains('hide-element')) $('#room-message-search').val('').trigger('input');
+        target.setAttribute('tabindex', '-1');
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: 'center' });
+      });
+      $item.find('.message__body').before($quote);
+    }
+
+    const $toolbar = $('<div class="message-toolbar"></div>');
+    if (message.type !== 'call') {
+      $toolbar.append('<details class="message-reactions"><summary aria-label="Reactions"><i class="fa-regular fa-face-smile" aria-hidden="true"></i> <span class="reaction-summary"></span></summary><div class="reaction-bar"></div></details>');
+    }
+    const $actions = $('<div class="msg-owner-actions"></div>');
+    const $reply = $('<button type="button" class="msg-action-btn" title="Reply" aria-label="Reply"><i class="fa-solid fa-reply" aria-hidden="true"></i></button>');
+    $reply.on('click', () => {
+      const current = peerId && user_message_dictionary[peerId]?.find((item) => item.id === message.id);
+      const quote = summarizeMessage(current || message);
+      if (!peerId && message.type === 'text') {
+        quote.text = Array.from($item.find('.message__body p').text()).slice(0, 160).join('');
+      }
+      setReplyTarget(mode, { id: message.id, ...quote });
+      $(peerId ? '#private-message-input' : '#message-input').trigger('focus');
+    });
+    $actions.append($reply);
+    if (message.authorId === guestId && message.type !== 'call') {
+      if (message.type === 'text') {
+        const $edit = $('<button type="button" class="msg-action-btn" title="Edit message" aria-label="Edit message"><i class="fa-solid fa-pen" aria-hidden="true"></i></button>');
+        $edit.on('click', () => openMessageDialog(message.id, $item.find('.message__body p').text(), peerId));
+        $actions.append($edit);
+      }
+      const $delete = $('<button type="button" class="msg-action-btn msg-action-delete" title="Delete message" aria-label="Delete message"><i class="fa-solid fa-trash-can" aria-hidden="true"></i></button>');
+      $delete.on('click', () => openMessageDialog(message.id, undefined, peerId));
+      $actions.append($delete);
+    }
+    $item.find('.message__content').append($toolbar.append($actions));
+    renderMessageReactions($item, message.id, message.reactions, peerId);
   }
 
   function appendRoomMessageItem(message, isHistoryReplay) {
@@ -909,93 +1051,15 @@ $(function () {
       rendered_message_ids.add(message.id);
     }
 
-    var formattedTime = time.format(message.createdAt);
-    var isMine = message.authorId === guestId;
-    var initials = getInitials(message.from);
-    var avatarStyle = getAvatarStyle(message.from);
-    var extraClass = isMine ? 'message--outgoing' : '';
-    var template;
-    var html;
-    var isTextMessage = false;
-
-    if (message.type === 'location') {
-      template = $('#location-message-template').html();
-      html = Mustache.render(template, {
-        from: message.from,
-        url: message.url,
-        createdAt: formattedTime,
-        initials: initials,
-        extraClass: extraClass,
-      });
-    } else if (message.type === 'file') {
-      template = $('#file-message-template').html();
-      html = Mustache.render(template, {
-        from: message.from,
-        url: message.url,
-        filename: message.filename,
-        createdAt: formattedTime,
-        initials: initials,
-        extraClass: extraClass,
-      });
-    } else {
-      isTextMessage = true;
-      template = $('#message-template').html();
-      html = Mustache.render(template, {
-        text: message.text,
-        from: message.from,
-        createdAt: formattedTime,
-        initials: initials,
-        extraClass: extraClass,
-      });
-    }
-
-    var $li = $(html);
-    $li.find('.message__avatar').attr('style', avatarStyle);
-    if (message.id) {
-      $li.attr('data-message-id', message.id);
-    }
-    if (message.edited) {
-      $li.find('.user-time').after('<span class="edited-tag">(edited)</span>');
-    }
-
-    if (message.id) {
-      var $toolbar = $('<div class="message-toolbar"></div>');
-      var $reactionBar = $('<div class="reaction-bar"></div>');
-      $toolbar.append($reactionBar);
-
-      if (isMine) {
-        var $ownerActions = $('<div class="msg-owner-actions"></div>');
-        if (isTextMessage) {
-          var $editBtn = $(
-            '<button type="button" class="msg-action-btn" title="Edit message"><i class="fa-solid fa-pen"></i></button>'
-          );
-          $editBtn.on('click', function (e) {
-            e.preventDefault();
-            openMessageDialog(message.id, $li.find('.message__body p').text());
-          });
-          $ownerActions.append($editBtn);
-        }
-
-        var $delBtn = $(
-          '<button type="button" class="msg-action-btn msg-action-delete" title="Delete message"><i class="fa-solid fa-trash-can"></i></button>'
-        );
-        $delBtn.on('click', function (e) {
-          e.preventDefault();
-          openMessageDialog(message.id);
-        });
-        $ownerActions.append($delBtn);
-        $toolbar.append($ownerActions);
-      }
-
-      $li.find('.message__content').append($toolbar);
-      renderMessageReactions($li, message.id, message.reactions);
-    }
-
-    $('#messages').append($li);
+    const isMine = message.authorId === guestId;
+    $('#messages').append(buildMessage(message));
     const items = $('#messages > li');
     if (items.length > historyLimit) {
-      rendered_message_ids.delete(items.first().attr('data-message-id'));
+      const expiredId = items.first().attr('data-message-id');
+      rendered_message_ids.delete(expiredId);
       items.first().remove();
+      updateTimelineQuotes('#messages', expiredId, null);
+      refreshReplyTarget('group', 'deleted', { messageId: expiredId });
     }
     updateEmptyStates();
     if (activeChatMode === 'group') applySearchFilter();
@@ -1013,9 +1077,9 @@ $(function () {
   let dialogMessage = null;
   const dialog = document.getElementById('message-dialog');
 
-  function openMessageDialog(id, text) {
+  function openMessageDialog(id, text, peerId) {
     const editing = text !== undefined;
-    dialogMessage = { id, editing, room: currentRoomName };
+    dialogMessage = { id, editing, peerId, room: currentRoomName };
     $('#message-dialog-status').text('');
     $('#message-dialog-title').text(editing ? 'Edit message' : 'Delete message?');
     $('#message-edit-label, #message-edit-input').toggleClass('hide-element', !editing);
@@ -1028,14 +1092,22 @@ $(function () {
   $('#message-dialog-cancel').on('click', () => dialog.close());
   $('#message-dialog-form').on('submit', async (event) => {
     event.preventDefault();
-    const { id, editing, room } = dialogMessage;
+    const pending = dialogMessage;
+    const { id, editing, room, peerId } = pending;
     const text = $('#message-edit-input').val().trim();
     if (!ready || switching || room !== currentRoomName || (editing && !text)) return;
+    if (peerId && getActivePrivateUserId() !== peerId) {
+      dialog.close();
+      return;
+    }
     $('#message-dialog-submit').prop('disabled', true);
     try {
-      await request(editing ? 'message:edit' : 'message:delete', { messageId: id, text });
+      await request(editing ? 'message:edit' : 'message:delete', { messageId: id, peerId, text });
+      if (dialogMessage !== pending || !dialog.open) return;
       dialog.close();
+      document.getElementById(peerId ? 'private-message-input' : 'message-input').focus({ preventScroll: true });
     } catch (error) {
+      if (dialogMessage !== pending || !dialog.open) return;
       $('#message-dialog-status').text(error.message);
       $('#message-dialog-submit').prop('disabled', false);
     }
@@ -1047,30 +1119,144 @@ $(function () {
     renderGroupsSidebar();
   });
 
-  socket.on('message:edited', function (data) {
-    if (!data || !data.messageId) return;
-    var $li = $('#messages li.message[data-message-id="' + data.messageId + '"]');
-    if (!$li.length) return;
-    $li.find('.message__body p').text(data.text);
-    applySearchFilter();
-    if (!$li.find('.edited-tag').length) {
-      $li.find('.user-time').after('<span class="edited-tag">(edited)</span>');
+  function updateDirectMessages(messages, event, data) {
+    if (event === 'new') {
+      if (messages.some((message) => message.id === data.message.id)) return messages;
+      return [...messages, data.message];
     }
+    if (event === 'read') {
+      const reads = new Map(data.receipts.map(({ id, readAt }) => [id, readAt]));
+      return messages.map((message) => reads.has(message.id) ? { ...message, readAt: reads.get(message.id) } : message);
+    }
+    const { messageId, text, editedAt, reactions, quote } = data;
+    const next = event === 'deleted' ? messages.filter((message) => message.id !== messageId) : messages;
+    return next.map((message) => {
+      if (message.id === messageId) {
+        if (event === 'edited') return { ...message, text, editedAt, edited: true };
+        if (event === 'reaction-updated') return { ...message, reactions };
+      }
+      if (message.replyTo === messageId && event !== 'reaction-updated') {
+        return { ...message, reply: event === 'edited' ? quote : null };
+      }
+      return message;
+    });
+  }
+
+  function applyDirectEvent(peerId, event, data) {
+    pendingDirectHistories.get(peerId)?.push({ event, data });
+    const current = user_message_dictionary[peerId] || [];
+    const updated = updateDirectMessages(current, event, data);
+    user_message_dictionary[peerId] = updated;
+    return updated !== current;
+  }
+
+  function updateReceiptLabel(label, readAt) {
+    label.text(readAt ? 'Seen · ' + time.format(readAt) : 'Sent');
+    if (readAt) label.attr('title', 'Seen ' + receiptTime.format(readAt));
+  }
+
+  function applyDirectReceipts(id, receipts) {
+    if (!receipts.length) return;
+    applyDirectEvent(id, 'read', { receipts });
+    if (getActivePrivateUserId() !== id) return;
+    const reads = new Map(receipts.map(({ id: messageId, readAt }) => [messageId, readAt]));
+    $('#private_messages_list > li').each((_, row) => {
+      const readAt = reads.get(row.dataset.messageId);
+      if (readAt) updateReceiptLabel($(row).find('.direct-message-receipt'), readAt);
+    });
+  }
+
+  socket.on('dm:read', ({ peer, thread, receipts }) => {
+    updateDirectThread(peer, thread);
+    applyDirectReceipts(peer.guestId, receipts);
   });
 
-  socket.on('message:deleted', function (data) {
-    if (!data || !data.messageId) return;
-    rendered_message_ids.delete(data.messageId);
-    $('#messages li.message[data-message-id="' + data.messageId + '"]').remove();
-    updateEmptyStates();
-  });
+  function scheduleDirectRead() {
+    if (directReadTimer || activeChatMode !== 'personal') return;
+    directReadTimer = setTimeout(markVisibleDirectMessages, 160);
+  }
 
-  socket.on('message:reaction-updated', function (data) {
-    if (!data || !data.messageId) return;
-    var $li = $('#messages li.message[data-message-id="' + data.messageId + '"]');
-    if (!$li.length) return;
-    renderMessageReactions($li, data.messageId, data.reactions);
-  });
+  async function markVisibleDirectMessages() {
+    directReadTimer = null;
+    const id = getActivePrivateUserId();
+    if (!ready || switching || !id || directReadsInFlight.has(id) || document.hidden || !document.hasFocus() ||
+        dialog.open || $('#show-people').attr('aria-expanded') === 'true') return;
+
+    const list = document.getElementById('private_messages_list');
+    const viewport = list.getBoundingClientRect();
+    const top = Math.max(0, viewport.top);
+    const bottom = Math.min(window.innerHeight, viewport.bottom);
+    if (bottom <= top) return;
+    const unread = new Set((user_message_dictionary[id] || [])
+      .filter((message) => message.authorId === id && !message.readAt).map((message) => message.id));
+    const visible = Array.from(list.children).filter((row) => {
+      if (!unread.has(row.dataset.messageId) || row.classList.contains('hide-element')) return false;
+      const bounds = row.getBoundingClientRect();
+      const overlap = Math.min(bounds.bottom, bottom) - Math.max(bounds.top, top);
+      return bounds.height > 0 && overlap >= Math.min(bounds.height, bottom - top) / 2;
+    });
+    const messageIds = visible.slice(0, 50).map((row) => row.dataset.messageId);
+    if (!messageIds.length) return;
+    const batch = {};
+    directReadsInFlight.set(id, batch);
+    let receipts;
+    try {
+      receipts = await request('dm:read', { peerId: id, messageIds });
+      if (directReadsInFlight.get(id) === batch) applyDirectReceipts(id, receipts);
+    } catch {
+      // A later view or reconnect reads the server's current receipt state.
+    } finally {
+      if (directReadsInFlight.get(id) === batch) directReadsInFlight.delete(id);
+      if (receipts?.length) scheduleDirectRead();
+    }
+  }
+
+  document.getElementById('private_messages_list').addEventListener('scroll', scheduleDirectRead, { passive: true });
+  document.addEventListener('visibilitychange', scheduleDirectRead);
+  dialog.addEventListener('close', scheduleDirectRead);
+  window.addEventListener('focus', scheduleDirectRead);
+  window.addEventListener('resize', scheduleDirectRead);
+
+  function refreshReplyTarget(mode, event, { messageId, quote }) {
+    const target = replyTargets[mode];
+    if (target?.id !== messageId) return;
+    if (event === 'deleted') setReplyTarget(mode, null);
+    if (event === 'edited') setReplyTarget(mode, { id: messageId, ...quote });
+  }
+
+  function updateTimelineQuotes(list, messageId, quote) {
+    $(list + ' .message-quote').filter((_, button) => button.dataset.replyTo === messageId)
+      .each((_, button) => updateQuote($(button), quote));
+  }
+
+  for (const event of ['edited', 'deleted', 'reaction-updated']) {
+    socket.on('message:' + event, (data) => {
+      if (!data?.messageId) return;
+      if (data.peer) {
+        const peerId = data.peer.guestId;
+        updateDirectThread(data.peer, data.thread);
+        applyDirectEvent(peerId, event, data);
+        if (getActivePrivateUserId() !== peerId) return;
+      }
+      const mode = data.peer ? 'personal' : 'group';
+      const list = data.peer ? '#private_messages_list' : '#messages';
+      const $item = $(list + ' > li').filter((_, row) => row.dataset.messageId === data.messageId);
+      refreshReplyTarget(mode, event, data);
+      if (event === 'deleted') {
+        if (!data.peer) rendered_message_ids.delete(data.messageId);
+        $item.remove();
+        updateTimelineQuotes(list, data.messageId, null);
+        updateEmptyStates();
+      } else if (event === 'edited') {
+        $item.find('.message__body p').text(data.text);
+        if (!$item.find('.edited-tag').length) $item.find('.user-time').after('<span class="edited-tag">(edited)</span>');
+        updateTimelineQuotes(list, data.messageId, data.quote);
+        if (activeChatMode === mode) applySearchFilter();
+      } else {
+        renderMessageReactions($item, data.messageId, data.reactions, data.peer?.guestId);
+      }
+    });
+  }
 
   function updateRoomTypingBanner() {
     var names = Object.keys(room_typing_users).map(function (uid) {
@@ -1124,14 +1310,16 @@ $(function () {
     if (!file) return;
     input.value = '';
     const peer = privateUpload ? getActivePrivateUserId() : '';
-    if (!ready || switching || (privateUpload && !peer)) return showError('Open a conversation before sharing files.');
+    const mode = privateUpload ? 'personal' : 'group';
+    const reply = replyTargets[mode];
+    if (!ready || switching || (privateUpload && !directPeers[peer])) return showError('Open a conversation before sharing files.');
     if (file.size > 50 * 1024 * 1024) return showError('Files must be 50 MB or smaller.');
 
     const data = new FormData();
     data.append('file', file);
     const progress = document.getElementById(privateUpload ? 'private-upload-progress-bar' : 'upload-progress-bar');
     const bar = progress.firstElementChild;
-    const button = $(privateUpload ? '#private-send-file-click' : '#send-file').prop('disabled', true);
+    const button = $(privateUpload ? '#private-send-file-click' : '#send-file').prop('disabled', true).attr('aria-busy', 'true');
     function setProgress(percent) {
       bar.style.width = percent + '%';
       bar.textContent = percent + '%';
@@ -1146,13 +1334,16 @@ $(function () {
     xhr.setRequestHeader('X-Chat-Connection', socket.id);
     xhr.setRequestHeader('X-Chat-Channel', encodeURIComponent('chat:' + currentRoomName.toLowerCase()));
     if (peer) xhr.setRequestHeader('X-Chat-Peer', peer);
+    if (reply) xhr.setRequestHeader('X-Chat-Reply-To', reply.id);
     xhr.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) setProgress(Math.round(100 * event.loaded / event.total));
     });
     xhr.addEventListener('loadend', () => {
-      button.prop('disabled', false);
+      button.prop('disabled', false).removeAttr('aria-busy');
+      if (privateUpload) updateDirectAvailability();
       progress.classList.add('hide-element');
       if (xhr.status !== 201) showError(xhr.response?.error || 'The upload could not be confirmed. Check the conversation before retrying.');
+      else if (reply && replyTargets[mode] === reply) setReplyTarget(mode, null);
     });
     xhr.send(data);
   }
@@ -1168,15 +1359,19 @@ $(function () {
     $('.status-pulse-dot').toggleClass('status-pulse-dot--disconnected', !connected);
     $('#message-input, #private-message-input, #group-send-btn, #private-send-btn, #quick-group-btn, #presence-status-select')
       .prop('disabled', !connected);
+    updateDirectAvailability();
   }
 
-  socket.on('room:state', ({ user, users, messages, participants, historyLimit: limit }) => {
+  socket.on('room:state', ({ user, users, messages, participants, directThreads: threads, historyLimit: limit }) => {
     historyLimit = limit;
     if (roomCall && roomCall.sessionId !== 'room:chat:' + user.room.toLowerCase()) leaveRoomSfuCall(false);
     if (dialog.open) dialog.close();
     const sameRoom = currentRoomName.toLowerCase() === user.room.toLowerCase();
-    const previousPeer = sameRoom ? room_users_map[activePrivateUserId]?.guestId : null;
-    if (!sameRoom) $('#message-input, #private-message-input').val('');
+    const previousPeer = sameRoom ? activePrivatePeer?.guestId : null;
+    if (!sameRoom) {
+      $('#message-input, #private-message-input').val('');
+      setReplyTarget('group', null);
+    }
     currentRoomName = user.room;
     currentUserName = user.name;
     currentUserStatus = user.status;
@@ -1189,7 +1384,16 @@ $(function () {
     rendered_message_ids.clear();
     room_typing_users = Object.create(null);
     user_message_dictionary = Object.create(null);
+    pendingDirectHistories.clear();
+    directReadsInFlight.clear();
     unread_counts = Object.create(null);
+    directThreads.clear();
+    directHistoryCursors.clear();
+    loadedDirectHistories.clear();
+    for (const thread of threads) {
+      directThreads.set(thread.peer.guestId, thread);
+      unread_counts[thread.peer.guestId] = thread.unread;
+    }
     clearTimeout(roomTypingStopTimeout);
     clearTimeout(privateTypingStopTimeout);
     roomTypingStopTimeout = null;
@@ -1205,8 +1409,7 @@ $(function () {
     updateUsers(users);
     setConnection('Connected', true);
     $('#alert-box').addClass('alert-hide');
-    const returningPeer = previousPeer && users.find((person) => person.guestId === previousPeer);
-    if (returningPeer) openPersonalChatForPeer(returningPeer.id);
+    if (directPeers[previousPeer]) openPersonalChatForPeer(previousPeer, false);
   });
 
   socket.on('connect', async () => {
@@ -1238,130 +1441,120 @@ $(function () {
     showError('The chat server is unavailable. Use Leave group to try a new session.');
   });
 
-  async function openPersonalChatForPeer(id) {
-    const peer = room_users_map[id];
-    if (!ready || switching || !peer || peer.guestId === guestId) return;
-    switchToPersonalChatCanvas(id, peer.name);
-    $('#private-message-input').trigger('focus');
-    const room = currentRoomName;
+  async function loadDirectHistory(id, before) {
+    if (pendingDirectHistories.has(id)) return;
+    const queued = [];
+    pendingDirectHistories.set(id, queued);
+    updateDirectAvailability();
     try {
-      const history = await request('dm:history', { peerId: id });
-      if (currentRoomName !== room || !room_users_map[id]) return;
-      const combined = new Map(history.map((message) => [message.id, message]));
-      for (const message of user_message_dictionary[id] || []) combined.set(message.id, message);
-      user_message_dictionary[id] = Array.from(combined.values()).slice(-historyLimit);
-      if (getActivePrivateUserId() === id) renderPrivateMessages(id);
+      const page = await request('dm:history', { peerId: id, before });
+      if (pendingDirectHistories.get(id) !== queued) return;
+      const merged = new Map(page.messages.map((message) => [message.id, message]));
+      if (before !== undefined) {
+        for (const message of user_message_dictionary[id] || []) merged.set(message.id, message);
+      }
+      user_message_dictionary[id] = queued.reduce((messages, update) =>
+        updateDirectMessages(messages, update.event, update.data), Array.from(merged.values()));
+      if (page.before === null) directHistoryCursors.delete(id);
+      else directHistoryCursors.set(id, page.before);
+      loadedDirectHistories.add(id);
+      if (getActivePrivateUserId() === id) renderPrivateMessages(id, before !== undefined);
     } catch (error) {
       if (getActivePrivateUserId() === id) showError(error.message);
+    } finally {
+      if (pendingDirectHistories.get(id) === queued) pendingDirectHistories.delete(id);
+      updateDirectAvailability();
     }
+  }
+
+  function openPersonalChatForPeer(id, focus = true) {
+    const peer = directPeers[id];
+    if (!ready || switching || !peer || id === guestId) return;
+    const active = getActivePrivateUserId() === id;
+    if (!active) switchToPersonalChatCanvas(id, peer.name);
+    if (focus) $('#private-message-input').trigger('focus');
+    if (!active || !loadedDirectHistories.has(id)) loadDirectHistory(id);
+  }
+
+  $('#load-older-direct').on('click', () => {
+    const id = getActivePrivateUserId();
+    if (ready && !switching && directHistoryCursors.has(id)) loadDirectHistory(id, directHistoryCursors.get(id));
+  });
+
+  function renderDirectSidebar() {
+    const peers = Object.create(null);
+    for (const { peer } of directThreads.values()) {
+      peers[peer.guestId] = { ...peer, id: null, name: peer.name || 'Guest', status: 'offline' };
+    }
+    for (const user of onlineUsers) {
+      if (user.guestId === guestId && user.id !== socket.id) continue;
+      const thread = directThreads.get(user.guestId);
+      if (thread) thread.peer.name = user.name;
+      peers[user.guestId] = user;
+    }
+    directPeers = peers;
+    const active = getActivePrivateUserId();
+    if (active && !peers[active]) {
+      if (dialog.open) dialog.close();
+      switchToGroupChatCanvas();
+    } else if (active) {
+      activePrivatePeer = peers[active];
+      $('#header-room-title').text(activePrivatePeer.name);
+      showDirectPresence(activePrivatePeer.status);
+    }
+
+    const ordered = Object.values(peers).sort((a, b) =>
+      (a.guestId === guestId) - (b.guestId === guestId) ||
+      (directThreads.get(b.guestId)?.latest?.createdAt || 0) - (directThreads.get(a.guestId)?.latest?.createdAt || 0) ||
+      a.name.localeCompare(b.name));
+    const $list = $('<ol></ol>');
+    for (const user of ordered) {
+      const id = user.guestId;
+      const self = id === guestId;
+      const displayName = self ? user.name + ' (You)' : user.name;
+      const $item = $('<li class="user-list"></li>').attr('data-user-id', id).toggleClass('user-list--self', self);
+      const $avatar = $('<div class="user-avatar-badge user-avatar-badge--sm"></div>')
+        .attr('style', getAvatarStyle(user.name)).text(getInitials(user.name));
+      const $dot = $('<span class="user-avatar-status-dot"></span>').addClass('status-' + user.status);
+      const $avatarWrap = $('<div class="sidebar-item-avatar-wrap"></div>').append($avatar, $dot);
+      const $info = $('<div class="user-list__name"></div>').append(
+        $('<span class="user-primary-name"></span>').text(displayName),
+        $('<span class="user-secondary-status"></span>').text(directMessageSubtitle(user)));
+      $item.append($('<div class="user-row-flex"></div>').append($avatarWrap, $info));
+      if (!self) {
+        const $badge = $('<span class="new-message"></span>').attr('data-user-id', id);
+        const unread = unread_counts[id] || 0;
+        if (unread) $badge.css('display', 'inline-block').text(String(unread));
+        const $button = $('<button type="button" class="btn-chat-trigger"><i class="fa-regular fa-comment-dots" aria-hidden="true"></i></button>')
+          .attr('aria-label', 'Message ' + user.name);
+        $item.append($('<div class="user-list__actions"></div>').append($badge, $button));
+        $item.on('click', () => openPersonalChatForPeer(id));
+      }
+      $list.append($item);
+    }
+    $('#users').empty().append($list);
+    updateSidebarActiveHighlights();
+    updateDirectAvailability();
   }
 
   function updateUsers(users) {
     if (!Array.isArray(users)) return;
-    var userfound = false;
-    var activePrivateId = getActivePrivateUserId();
-    var $ol = $('<ol></ol>');
-    room_users_map = Object.create(null);
-
-    $('#online-count').text(String(new Set(users.map((user) => user.guestId)).size - 1));
-
-    users.forEach(function (user) {
-      room_users_map[user.id] = user;
-      if (user.id === socket.id && user.room) {
-        currentRoomName = user.room;
-        currentUserName = user.name;
-        ensureRoomInKnownList(currentRoomName);
-        $('#sidebar-room-name').text('# ' + user.room);
-        if (activeChatMode === 'group') {
-          $('#header-room-title').text('# ' + user.room);
-        }
-      }
-
-      if (user.guestId === guestId && user.id !== socket.id) return;
-      var isSelf = user.id === socket.id;
-      var status = user.status || 'online';
-      var statusLabel = status === 'dnd' ? 'Do Not Disturb' : status === 'away' ? 'Away' : 'Online';
-      var displayName = isSelf ? user.name + ' (You)' : user.name;
-      var avatarStyle = getAvatarStyle(user.name);
-      var initials = getInitials(user.name);
-
-      var $list = $('<li class="user-list"></li>').attr('data-user-id', user.id);
-      if (isSelf) {
-        $list.addClass('user-list--self');
-      } else if (activeChatMode === 'personal' && activePrivateId === user.id) {
-        $list.addClass('active-chat-item');
-      }
-
-      var $avatarWrap = $('<div class="sidebar-item-avatar-wrap"></div>');
-      var $avatar = $('<div class="user-avatar-badge user-avatar-badge--sm"></div>')
-        .attr('style', avatarStyle)
-        .text(initials);
-      var $dot = $('<span class="user-avatar-status-dot status-' + status + '"></span>');
-      $avatarWrap.append($avatar).append($dot);
-
-      var $infoWrap = $('<div class="user-list__name"></div>');
-      $infoWrap.append($('<span class="user-primary-name"></span>').text(displayName));
-      $infoWrap.append($('<span class="user-secondary-status"></span>').text(statusLabel));
-
-      var $row = $('<div class="user-row-flex"></div>').append($avatarWrap).append($infoWrap);
-      $list.append($row);
-
-      if (!isSelf) {
-        var $actionsWrap = $('<div class="user-list__actions"></div>');
-        var $badge = $('<span class="new-message"></span>').attr('data-user-id', user.id);
-        var unread = unread_counts[user.id] || 0;
-        if (unread > 0) {
-          $badge.css('display', 'inline-block').text(String(unread));
-        }
-
-        var $chatBtn = $('<button type="button" class="btn-chat-trigger"><i class="fa-regular fa-comment-dots" aria-hidden="true"></i></button>').attr('aria-label', 'Message ' + user.name);
-        $actionsWrap.append($badge).append($chatBtn);
-        $list.append($actionsWrap);
-
-        $list.on('click', function (e) {
-          e.preventDefault();
-          openPersonalChatForPeer(user.id);
-        });
-      }
-
-      $ol.append($list);
-
-      if (activePrivateId && activePrivateId === user.id) {
-        userfound = true;
-        $('#header-status-dot').attr('class', 'room-status-dot status-' + status);
-        $('#header-avatar-status-dot').attr('class', 'header-avatar-status-dot status-' + status);
-        $('#header-chat-subtitle').text('Direct Message · ' + (status === 'dnd' ? 'Do Not Disturb' : status === 'away' ? 'Away' : 'Active Now'));
-      }
-    });
-
-    if (activePrivateId && !userfound) {
-      switchToGroupChatCanvas();
-    }
-
-    for (const id of Object.keys(user_message_dictionary)) {
-      if (!room_users_map[id]) {
-        delete user_message_dictionary[id];
-      }
-    }
-    for (const id of Object.keys(unread_counts)) {
-      if (!room_users_map[id]) delete unread_counts[id];
-    }
-    $('#users').empty().append($ol);
+    onlineUsers = users;
+    $('#online-count').text(String(new Set(users.filter((user) => user.guestId !== guestId).map((user) => user.guestId)).size));
+    renderDirectSidebar();
     renderGroupsSidebar();
   }
   socket.on('updateUserList', updateUsers);
 
   socket.on('newMessage', (message) => appendRoomMessageItem(message, false));
-  socket.on('dm:message', ({ peer, message }) => {
-    const id = peer.id;
-    const messages = user_message_dictionary[id] || [];
-    if (messages.some((item) => item.id === message.id)) return;
-    user_message_dictionary[id] = [...messages, message].slice(-historyLimit);
+  socket.on('dm:message', ({ peer, thread, message }) => {
+    const id = peer.guestId;
+    updateDirectThread(peer, thread);
+    if (!applyDirectEvent(id, 'new', { message })) return;
     if (getActivePrivateUserId() === id) {
       $('#private-typing-indicator').addClass('hide-element').empty();
-      renderPrivateMessages(id);
-    } else if (message.authorId !== guestId) {
-      incrementUnreadBadge(id);
+      appendDirectMessage(id, message);
+      updateDirectAvailability();
     }
     if (message.authorId !== guestId && message.type !== 'call') notifyMessage();
   });
@@ -1378,7 +1571,7 @@ $(function () {
 
   $('#private-message-input').on('input', function () {
     const peerId = getActivePrivateUserId();
-    if (!peerId || !ready || switching) return;
+    if (!directPeers[peerId]?.id || !ready || switching) return;
     if (!privateTypingStopTimeout) socket.volatile.emit('dm:typing', { peerId, isTyping: true });
     clearTimeout(privateTypingStopTimeout);
     privateTypingStopTimeout = setTimeout(() => {
@@ -1387,29 +1580,53 @@ $(function () {
     }, 1500);
   });
 
+  function resizeComposer(input) {
+    if (!input.offsetParent) return;
+    input.style.height = '';
+    input.style.height = input.scrollHeight + input.offsetHeight - input.clientHeight + 'px';
+  }
+
   function bindComposer(formId, inputId, buttonId, direct) {
     let sending = false;
+    const field = document.querySelector(inputId);
+    field.addEventListener('input', () => resizeComposer(field));
+    field.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+      event.preventDefault();
+      field.form.requestSubmit();
+    });
     $(formId).on('submit', async (event) => {
       event.preventDefault();
       const input = $(inputId);
       const text = input.val().trim();
       const peerId = getActivePrivateUserId();
-      const peerGuestId = room_users_map[peerId]?.guestId;
-      if (!ready || switching || sending || !text || (direct && !peerId)) return;
+      const peerGuestId = directPeers[peerId]?.guestId;
+      if (!ready || switching || sending || !text || (direct && !directPeers[peerId])) return;
+      const mode = direct ? 'personal' : 'group';
+      const reply = replyTargets[mode];
+      const room = currentRoomName;
       sending = true;
-      $(buttonId).prop('disabled', true);
+      $(buttonId).prop('disabled', true).attr('aria-busy', 'true');
       try {
-        await request(direct ? 'dm:send' : 'createMessage', direct ? { peerId, text } : { text });
+        await request(direct ? 'dm:send' : 'createMessage', {
+          text,
+          peerId: direct ? peerId : undefined,
+          replyTo: reply?.id,
+        });
+        if (currentRoomName !== room) return;
+        if (replyTargets[mode] === reply) setReplyTarget(mode, null);
         if (direct && getActivePrivateUserId() !== peerId) {
           if (directDrafts.get(peerGuestId)?.trim() === text) directDrafts.delete(peerGuestId);
         } else if (input.val().trim() === text) {
           input.val('');
+          resizeComposer(field);
         }
       } catch (error) {
         showError(error.message);
       } finally {
         sending = false;
-        $(buttonId).prop('disabled', !ready);
+        $(buttonId).prop('disabled', !ready).removeAttr('aria-busy');
+        if (direct) updateDirectAvailability();
       }
     });
   }
@@ -1420,21 +1637,35 @@ $(function () {
   function bindLocation(selector, direct) {
     $(selector).on('click', function () {
       const peerId = getActivePrivateUserId();
-      if (!ready || switching || (direct && !peerId)) return;
+      if (!ready || switching || (direct && !directPeers[peerId])) return;
       if (!navigator.geolocation) return showError('Location sharing is unavailable in this browser.');
       const room = currentRoomName;
       const connection = socket.id;
-      const button = $(this).prop('disabled', true);
+      const mode = direct ? 'personal' : 'group';
+      const reply = replyTargets[mode];
+      const button = $(this).prop('disabled', true).attr('aria-busy', 'true');
+      const restoreButton = () => {
+        button.prop('disabled', false).removeAttr('aria-busy');
+        if (direct) updateDirectAvailability();
+      };
       navigator.geolocation.getCurrentPosition(async ({ coords }) => {
-        button.prop('disabled', false);
-        if (room !== currentRoomName || connection !== socket.id || switching || (direct && peerId !== getActivePrivateUserId())) {
+        if (room !== currentRoomName || connection !== socket.id || switching ||
+            (direct && (peerId !== getActivePrivateUserId() || !directPeers[peerId]))) {
+          restoreButton();
           showError('The conversation changed before your location could be shared.');
           return;
         }
         const { latitude, longitude } = coords;
-        await send(direct ? 'dm:location' : 'createLocationMessage', { peerId, latitude, longitude });
+        try {
+          await request(direct ? 'dm:location' : 'createLocationMessage', { peerId, latitude, longitude, replyTo: reply?.id });
+          if (reply && replyTargets[mode] === reply) setReplyTarget(mode, null);
+        } catch (error) {
+          showError(error.message);
+        } finally {
+          restoreButton();
+        }
       }, (error) => {
-        button.prop('disabled', false);
+        restoreButton();
         showError('Unable to share your location. ' + error.message);
       }, { timeout: 10000, maximumAge: 0 });
     });
@@ -1443,29 +1674,42 @@ $(function () {
   bindLocation('#send-location', false);
   bindLocation('#private-send-location', true);
 
-  function showDirectStage(call, label, status) {
-    $('#personal-call-title').text(label);
-    $('#personal-call-timer').text(status);
+  function showDirectStatus(status) {
+    $('#personal-call-timer, #personal-call-announcement').text(status);
+  }
+
+  function showDirectStage(call, status) {
+    $('#personal-call-title').text(call.peer.name);
+    $('#personal-call-kind').text(call.mode === 'video' ? 'Video call' : 'Audio call');
+    $('#personal-call-avatar').text(getInitials(call.peer.name)).attr('style', getAvatarStyle(call.peer.name));
+    showDirectStatus(status);
+    $('#end-call span').text(call.accepted ? 'End call' : 'Cancel call');
     $('#personal-call-stage').removeClass('hide-element');
     $('#personal-toggle-cam').toggleClass('hide-element', call.mode === 'audio');
-    $('#audio-call, #video-call').prop('disabled', true);
+    $('#personal-toggle-mic, #personal-toggle-cam').prop('disabled', true);
+    updateDirectAvailability();
     resetMediaButtons('personal');
+    $('#personal-toggle-mic').attr('title', 'Mute microphone');
+    $('#personal-toggle-cam').attr('title', 'Turn camera off');
   }
 
   async function startDirectCall(mode) {
-    const peer = room_users_map[getActivePrivateUserId()];
-    if (!ready || switching || !peer || directCall) return;
+    const peer = directPeers[getActivePrivateUserId()];
+    if (!ready || switching || !peer?.id || directCall) return;
     if (roomCall) return showError('Leave the group call before starting a direct call.');
     const call = { mode, peer, id: null };
     directCall = call;
     sounds.stopMessage();
     sounds.stopPreview();
-    showDirectStage(call, 'Calling ' + peer.name, 'Ringing…');
+    showDirectStage(call, 'Calling…');
     try {
-      const { id } = await request('call:start', { peerId: peer.id, mode });
+      const { id } = await request('call:start', { peerId: peer.guestId, mode });
       call.id = id;
       if (directCall !== call) return send('call:end', { id });
-      if (!call.accepted) sounds.setRinging('outgoing');
+      if (!call.accepted) {
+        showDirectStatus('Ringing…');
+        sounds.setRinging('outgoing');
+      }
     } catch (error) {
       if (directCall === call) {
         showError(error.message);
@@ -1477,6 +1721,7 @@ $(function () {
   socket.on('call:incoming', ({ id, caller, mode }) => {
     if (directCall || roomCall) return send('call:end', { id, reason: 'declined' });
     directCall = { id, peer: caller, mode, incoming: true };
+    updateDirectAvailability();
     $('#incoming-caller-avatar').text(getInitials(caller.name)).attr('style', getAvatarStyle(caller.name));
     $('#incoming-caller-name').text(caller.name);
     $('#incoming-call-label').text(mode === 'video' ? 'Incoming video call' : 'Incoming audio call');
@@ -1489,6 +1734,7 @@ $(function () {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: call.mode === 'video' });
       if (directCall !== call) return stopTracks(stream);
       activeMediaStream = stream;
+      $('#personal-toggle-mic, #personal-toggle-cam').prop('disabled', false);
       if (call.mode === 'video') {
         document.getElementById('self-video').srcObject = stream;
         $('#private-video-stage').removeClass('hide-element');
@@ -1532,7 +1778,7 @@ $(function () {
     playButton.hidden = true;
     playButton.onclick = null;
     $('#personal-call-stage, #private-video-stage, #incoming-call-card').addClass('hide-element');
-    $('#audio-call, #video-call').prop('disabled', false);
+    updateDirectAvailability();
   }
 
   function endDirectCall(reason) {
@@ -1545,10 +1791,11 @@ $(function () {
     const call = directCall;
     if (!call?.incoming) return;
     call.incoming = false;
+    call.accepted = true;
     $('#incoming-call-card').addClass('hide-element');
     sounds.setRinging(null);
-    openPersonalChatForPeer(call.peer.id);
-    showDirectStage(call, 'Call with ' + call.peer.name, 'Connecting…');
+    openPersonalChatForPeer(call.peer.guestId);
+    showDirectStage(call, 'Connecting…');
     try {
       await request('call:accept', { id: call.id });
       if (directCall === call) connectDirectMedia(call);
@@ -1565,13 +1812,14 @@ $(function () {
     directCall.id = id;
     directCall.accepted = true;
     sounds.setRinging(null);
-    showDirectStage(directCall, 'Call with ' + directCall.peer.name, 'Connecting…');
+    showDirectStage(directCall, 'Connecting…');
     connectDirectMedia(directCall);
   });
 
   socket.on('call:connected', ({ id }) => {
     if (directCall?.id !== id || personalCallTimerTimeout) return;
     const startedAt = Date.now();
+    $('#personal-call-announcement').text('Call connected.');
     showTimer('#personal-call-timer', startedAt);
     personalCallTimerTimeout = setInterval(() => showTimer('#personal-call-timer', startedAt), 1000);
   });
@@ -1590,9 +1838,13 @@ $(function () {
   $('#video-call').on('click', () => startDirectCall('video'));
   $('#personal-toggle-mic').on('click', function () {
     toggleTrack($(this), activeMediaStream, 'private:' + directCall?.id, 'audio');
+    const label = $(this).attr('aria-pressed') === 'true' ? 'Unmute microphone' : 'Mute microphone';
+    $(this).attr('title', label);
   });
   $('#personal-toggle-cam').on('click', function () {
     toggleTrack($(this), activeMediaStream, 'private:' + directCall?.id, 'video');
+    const label = $(this).attr('aria-pressed') === 'true' ? 'Turn camera on' : 'Turn camera off';
+    $(this).attr('title', label);
   });
 
   $('#show-people').on('click', () => setSidebar($('#show-people').attr('aria-expanded') !== 'true'));

@@ -24,4 +24,12 @@ function reject(message) {
   throw error;
 }
 
-module.exports = { createEventRegistrar, reject };
+function validateReply(messageStore, conversation, replyTo) {
+  if (replyTo === undefined) return {};
+  if (typeof replyTo !== 'string' || !messageStore.getMessage(conversation, replyTo)) {
+    reject('The message you are replying to is unavailable.');
+  }
+  return { replyTo };
+}
+
+module.exports = { createEventRegistrar, reject, validateReply };
