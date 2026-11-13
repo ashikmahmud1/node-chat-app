@@ -14,6 +14,23 @@ const { MessageStore } = require('../server/utils/message-store');
 const { FixedWindowRateLimiter } = require('../server/middlewares/rate-limit.middleware');
 const { directConversation, generateMessage } = require('../server/utils/message');
 
+class ConnectedTestPeer {
+  connectionStateChange = { subscribe: (listener) => { this.changeState = listener; } };
+
+  async setRemoteDescription() {}
+
+  async createAnswer() {
+    return { type: 'answer', sdp: 'v=0\r\nt=0 0\r\na=candidate:1 1 udp 2130706431 127.0.0.1 5000 typ host\r\n' };
+  }
+
+  async setLocalDescription(description) {
+    this.localDescription = description;
+    this.changeState('connected');
+  }
+
+  async close() {}
+}
+
 describe('HTTP and Socket.IO integration', function () {
   this.timeout(5000);
   let server;
@@ -371,6 +388,86 @@ describe('HTTP and Socket.IO integration', function () {
     assert.deepEqual(await (await pushRequest(bob)).json(), { publicKey });
     await waitForPush(delivered, 1);
     assert.equal(delivered[0].id, id);
+  });
+
+  it('notifies eligible background group members and binds the click to the live call', async () => {
+    const deliveries = [];
+    await server.close();
+    await startServer(':memory:', {
+      PeerConnectionClass: ConnectedTestPeer,
+      sendPush: async ({ endpoint }, payload, options) => deliveries.push({ endpoint, payload: JSON.parse(payload), options }),
+    });
+    const alice = await guest('Alice', 'Engineering');
+    const bob = await guest('Bob', 'Engineering');
+    const foreground = await guest('Diane', 'Engineering');
+    const dnd = await guest('Ellen', 'Engineering');
+    const switched = await guest('Frank', 'Engineering');
+    const departed = await guest('Gina', 'Engineering');
+    const outside = await guest('Henry', 'Design');
+    const dismissed = await guest('Irene', 'Engineering');
+    for (const client of [alice, bob, foreground, dnd, switched, departed, outside, dismissed]) {
+      client.endpoint = 'https://fcm.googleapis.com/fcm/send/' + client.guestId;
+      assert.equal((await pushRequest(client, '/subscription', 'PUT', pushSubscription(client.endpoint))).status, 204);
+    }
+    await request(foreground.socket, 'push:visibility', { foreground: true });
+    await request(dismissed.socket, 'push:visibility', { foreground: true });
+    await request(dnd.socket, 'presence:update', { status: 'dnd' });
+    await request(switched.socket, 'room:switch', { room: 'Design' });
+    assert.equal((await pushRequest(departed, '/group', 'DELETE', { room: 'Engineering' })).status, 204);
+    departed.socket.disconnect();
+    const left = once(alice.socket, 'updateUserList');
+    bob.socket.disconnect();
+    await left;
+
+    const sessionId = 'room:chat:engineering';
+    const connectMedia = async (socket, mode, roomCallId) => {
+      const kinds = mode === 'video' ? ['audio', 'video', 'video'] : ['audio', 'video'];
+      const sdp = 'v=0\r\nt=0 0\r\n' + kinds.map((kind, mid) =>
+        `m=${kind} 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:${mid}\r\na=sendonly\r\n`).join('');
+      await request(socket, 'sfu:join', { sessionId, mode, roomCallId, screenMid: String(kinds.length - 1), sdp: { type: 'offer', sdp } });
+      await request(socket, 'sfu:ready', { sessionId });
+    };
+    const state = once(alice.socket, 'room:call-state');
+    await connectMedia(alice.socket, 'video');
+    const { id } = (await state)[0].call;
+    await waitForPush(deliveries, 1);
+    assert.equal(deliveries[0].endpoint, bob.endpoint);
+    assert.equal(deliveries[0].payload.kind, 'group-video-call');
+    assert.equal(deliveries[0].payload.id, id);
+    assert.deepEqual(Object.keys(deliveries[0].payload).sort(), ['expiresAt', 'id', 'kind']);
+    assert.equal(deliveries[0].options.urgency, 'high');
+    assert.deepEqual(await (await pushRequest(bob, '/target/' + id)).json(), { room: 'Engineering', name: 'Bob', groupCallId: id });
+    for (const client of [alice, foreground, dnd, switched, departed, outside]) {
+      assert.equal((await pushRequest(client, '/target/' + id)).status, 404);
+    }
+
+    const returning = await connect(bob.cookie);
+    await assert.rejects(request(returning.socket, 'join', { name: 'Bob', room: 'Design', groupCallId: id }), /no longer available/);
+    const snapshot = once(returning.socket, 'room:state');
+    await request(returning.socket, 'join', { name: 'Bob', room: 'Engineering', foreground: true, groupCallId: id });
+    assert.equal((await snapshot)[0].roomCall.id, id);
+    await connectMedia(returning.socket, 'video', id);
+    await request(alice.socket, 'sfu:leave', { sessionId });
+    assert.equal((await pushRequest(bob, '/target/' + id)).status, 200);
+    await request(returning.socket, 'sfu:leave', { sessionId });
+    assert.equal((await pushRequest(bob, '/target/' + id)).status, 404);
+    await assert.rejects(connectMedia(returning.socket, 'video', id), /group call has ended/);
+
+    const nextState = once(alice.socket, 'room:call-state');
+    await connectMedia(alice.socket, 'audio');
+    const nextId = (await nextState)[0].call.id;
+    assert.equal(deliveries.length, 1);
+    await request(dismissed.socket, 'room:call-dismiss', { id: nextId });
+    await request(dismissed.socket, 'push:visibility', { foreground: false });
+    assert.equal((await pushRequest(dismissed, '/target/' + nextId)).status, 404);
+    await request(foreground.socket, 'push:visibility', { foreground: false });
+    await waitForPush(deliveries, 2);
+    assert.equal(deliveries[1].payload.kind, 'group-audio-call');
+    assert.equal(deliveries[1].endpoint, foreground.endpoint);
+    await request(foreground.socket, 'push:visibility', { foreground: false });
+    assert.equal(deliveries.length, 2);
+    assert.equal((await pushRequest(foreground, '/group', 'DELETE', { room: 'Engineering' })).status, 204);
+    assert.equal((await pushRequest(foreground, '/target/' + deliveries[1].payload.id)).status, 404);
   });
 
   it('indexes existing direct history once and keeps read receipts across storage restarts', () => {

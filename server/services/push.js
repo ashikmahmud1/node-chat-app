@@ -5,6 +5,7 @@ const { logger } = require('../utils/logger');
 
 const MESSAGE_TTL = 24 * 60 * 60 * 1000;
 const MAX_SUBSCRIPTIONS = 8;
+const GROUP_CALL_KINDS = { audio: 'group-audio-call', video: 'group-video-call' };
 
 function validEndpoint(value) {
   if (typeof value !== 'string' || value.length > 2048 || !URL.canParse(value)) return false;
@@ -33,6 +34,7 @@ class PushService {
     this.messageStore = messageStore;
     this.db = messageStore.db;
     this.send = send;
+    this.canDeliverGroupCall = () => false;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS push_subscriptions (
         endpoint TEXT PRIMARY KEY,
@@ -57,7 +59,14 @@ class PushService {
         status TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       ) STRICT;
-      DELETE FROM push_jobs WHERE kind = 'call';
+      CREATE TABLE IF NOT EXISTS push_groups (
+        guest_id TEXT PRIMARY KEY,
+        room TEXT NOT NULL,
+        name TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS push_groups_room ON push_groups (room, updated_at);
+      DELETE FROM push_jobs WHERE kind IN ('call', 'group-audio-call', 'group-video-call');
     `);
     this.vapid = messageStore.transaction(() => {
       const key = 'push_vapid_keys';
@@ -129,6 +138,30 @@ class PushService {
       io.sockets.sockets.get(user.id)?.data.foreground === true);
   }
 
+  rememberGroup({ guestId, name }, room) {
+    this.db.prepare(`
+      INSERT INTO push_groups VALUES (?, ?, ?, ?) ON CONFLICT(guest_id)
+      DO UPDATE SET room = excluded.room, name = excluded.name, updated_at = excluded.updated_at
+    `).run(guestId, room, name, Date.now());
+  }
+
+  leaveGroup(guestId, room) {
+    this.db.prepare('DELETE FROM push_groups WHERE guest_id = ? AND room = ?').run(guestId, room);
+  }
+
+  groupMember(guestId, room) {
+    return this.db.prepare('SELECT name FROM push_groups WHERE guest_id = ? AND room = ? AND updated_at >= ?')
+      .get(guestId, room, Date.now() - config.limits.retentionMs);
+  }
+
+  groupSubscribers(room) {
+    const now = Date.now();
+    return this.db.prepare(`
+      SELECT g.guest_id AS guestId FROM push_groups g WHERE g.room = ? AND g.updated_at >= ?
+        AND EXISTS (SELECT 1 FROM push_subscriptions s WHERE s.guest_id = g.guest_id AND s.expires_at > ?)
+    `).all(room, now - config.limits.retentionMs, now);
+  }
+
   enqueue(guestId, kind, id, expiresAt = Date.now() + MESSAGE_TTL) {
     const now = Date.now();
     return this.db.prepare(`
@@ -138,7 +171,7 @@ class PushService {
   }
 
   cancelCall(id) {
-    this.db.prepare("DELETE FROM push_jobs WHERE kind = 'call' AND target_id = ?").run(id);
+    this.db.prepare("DELETE FROM push_jobs WHERE kind IN ('call', 'group-audio-call', 'group-video-call') AND target_id = ?").run(id);
   }
 
   wake() {
@@ -153,6 +186,7 @@ class PushService {
     this.db.prepare('DELETE FROM push_jobs WHERE expires_at <= ?').run(now);
     this.db.prepare('DELETE FROM push_subscriptions WHERE expires_at <= ?').run(now);
     this.db.prepare('DELETE FROM push_presence WHERE updated_at < ?').run(now - config.limits.retentionMs);
+    this.db.prepare('DELETE FROM push_groups WHERE updated_at < ?').run(now - config.limits.retentionMs);
   }
 
   async deliver() {
@@ -160,7 +194,7 @@ class PushService {
     const jobs = this.db.prepare(`
       SELECT j.*, s.guest_id, s.p256dh, s.auth FROM push_jobs j JOIN push_subscriptions s USING (endpoint)
       WHERE j.available_at <= ? AND j.expires_at > ? AND s.expires_at > ?
-      ORDER BY (j.kind = 'call') DESC, j.available_at LIMIT 16
+      ORDER BY (j.kind != 'message') DESC, j.available_at LIMIT 16
     `).all(now, now, now);
     const results = await Promise.allSettled(jobs.map((job) => this.deliverOne(job)));
     for (const result of results) {
@@ -176,6 +210,7 @@ class PushService {
       const target = this.messageStore.getNotificationMessage(job.target_id, job.guest_id);
       if (!target || target.readAt) return remove();
     }
+    if (Object.values(GROUP_CALL_KINDS).includes(job.kind) && !this.canDeliverGroupCall(job.target_id, job.guest_id)) return remove();
     const remaining = job.expires_at - Date.now();
     if (remaining <= 0) return remove();
     try {
@@ -183,7 +218,7 @@ class PushService {
         JSON.stringify({ kind: job.kind, id: job.target_id, expiresAt: job.expires_at }), {
           vapidDetails: this.vapid,
           TTL: Math.floor(remaining / 1000),
-          urgency: job.kind === 'call' ? 'high' : 'normal',
+          urgency: job.kind === 'message' ? 'normal' : 'high',
           topic: job.target_id.replaceAll('-', ''),
           timeout: 4000,
         });
@@ -211,4 +246,4 @@ class PushService {
   }
 }
 
-module.exports = { PushService, validEndpoint, validSubscription };
+module.exports = { PushService, validEndpoint, validSubscription, GROUP_CALL_KINDS };

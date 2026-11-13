@@ -1404,6 +1404,28 @@ $(async function () {
     updateDirectAvailability();
   }
 
+  $('#leave-group').on('click', async function () {
+    this.disabled = true;
+    try {
+      await notificationRequest('/api/push/group', 'DELETE', { room: currentRoomName });
+      sessionStorage.removeItem('nexus_join');
+      location.assign('/');
+    } catch (error) {
+      showError(error.message);
+      this.disabled = false;
+    }
+  });
+
+  function openNotification(target) {
+    if (!target.groupCallId) return openPersonalChatForPeer(target.peerId, false);
+    if (roomCall && roomCall.sessionId === roomSessionId() && activeRoomCall?.id === target.groupCallId) {
+      return switchToGroupChatCanvas();
+    }
+    if (activeRoomCall?.id !== target.groupCallId) return showError('This group call has ended.');
+    if (roomCall || directCall) return showError('Leave your current call to join this group call.');
+    joinRoomSfuCall(activeRoomCall.mode, activeRoomCall);
+  }
+
   socket.on('room:state', ({ user, users, messages, roomCall: ongoing, directThreads: threads, historyLimit: limit }) => {
     historyLimit = limit;
     if (roomCall && roomCall.sessionId !== 'room:chat:' + user.room.toLowerCase()) leaveRoomSfuCall(false);
@@ -1452,7 +1474,7 @@ $(async function () {
     updateRoomCallStatus(ongoing);
     $('#alert-box').addClass('alert-hide');
     if (notification) {
-      openPersonalChatForPeer(notification.peerId, false);
+      openNotification(notification);
       notification = null;
     } else if (directPeers[previousPeer]) {
       openPersonalChatForPeer(previousPeer, false);
@@ -1485,13 +1507,13 @@ $(async function () {
           if (switching || directCall || roomCall) throw new Error('Open this notification after leaving the current call or group switch.');
           switching = true;
           try {
-            await request('room:switch', { room: target.room });
+            await request('room:switch', { room: target.room, groupCallId: target.groupCallId });
           } finally {
             switching = false;
             renderIncomingCall();
           }
         }
-        openPersonalChatForPeer(target.peerId, false);
+        openNotification(target);
       } catch (error) {
         showError(error.message);
       }
@@ -1501,7 +1523,9 @@ $(async function () {
   socket.on('connect', async () => {
     setConnection('Joining…', false);
     try {
-      await request('join', { name: currentUserName, room: currentRoomName, foreground: foreground() });
+      await request('join', {
+        name: currentUserName, room: currentRoomName, foreground: foreground(), groupCallId: notification?.groupCallId,
+      });
     } catch (error) {
       if (!socket.connected) return;
       socket.disconnect();
@@ -1897,8 +1921,10 @@ $(async function () {
 
   $('#reject-call').on('click', () => {
     const group = incomingRoomCall();
-    if (group) handleRoomInvite(group);
-    else if (directCall?.incoming) endDirectCall('declined');
+    if (group) {
+      handleRoomInvite(group);
+      send('room:call-dismiss', { id: group.id });
+    } else if (directCall?.incoming) endDirectCall('declined');
   });
   $('#end-call').on('click', () => endDirectCall());
   $('#audio-call').on('click', () => startDirectCall('audio'));

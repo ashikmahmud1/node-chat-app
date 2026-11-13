@@ -6,7 +6,7 @@ const { publishDirect, requireDirectConversation } = require('../services/direct
 
 const ALLOWED_REACTIONS = new Set(['👍', '❤️', '🎉', '🚀', '👀']);
 
-function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls, sfuService, calls, push, signalingLimiter }) {
+function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls, sfuService, calls, push, groupNotifications, signalingLimiter }) {
   const requireUser = () => {
     const user = users.getUser(socket.id);
     if (!user) reject('Join a group first.');
@@ -23,6 +23,11 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
 
   const broadcastPresence = (room) => io.to(roomChannel(room)).emit('updateUserList', users.getUserList(room));
   const broadcastRooms = () => io.emit('updateRoomList', users.getActiveRooms());
+  const validateGroupNotification = (id, room) => {
+    if (id === undefined) return;
+    const target = typeof id === 'string' && groupNotifications.target(id, socket.data.guestId);
+    if (!target || roomChannel(target.room) !== roomChannel(room)) reject('This group call is no longer available.');
+  };
 
   const snapshot = (user, messages) => ({
     user,
@@ -50,6 +55,7 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     const user = users.addUser(socket.id, name, room, status, socket.data.guestId);
     messageStore.rememberDirectName(user);
     push.rememberPresence(user);
+    push.rememberGroup(user, roomChannel(user.room));
     const state = snapshot(user, messages);
     // A single snapshot establishes the context before live events arrive.
     socket.emit('room:state', state);
@@ -59,10 +65,11 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     return state.user;
   }
 
-  on('join', ({ name, room, foreground }) => {
+  on('join', ({ name, room, foreground, groupCallId }) => {
     if (users.getUser(socket.id)) reject('Already joined. Use group switching.');
     if (!isRealString(name, config.limits.maxNameLength)) reject('Enter a display name between 1 and 50 characters.');
     const target = resolveRoom(name, room);
+    validateGroupNotification(groupCallId, target.room);
     const messages = messageStore.getMessages(roomChannel(target.room));
     socket.data.foreground = foreground === true;
     return enter(name.trim(), target, push.status(socket.data.guestId), messages);
@@ -73,10 +80,11 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     socket.to(roomChannel(user.room)).emit('typing:update', { userId: socket.id, isTyping: false });
   };
 
-  on('room:switch', ({ room }) => {
+  on('room:switch', ({ room, groupCallId }) => {
     const current = requireUser();
     if (typeof room === 'string' && roomChannel(room) === roomChannel(current.room)) return current;
     const target = resolveRoom(current.name, room);
+    validateGroupNotification(groupCallId, target.room);
     const messages = messageStore.getMessages(roomChannel(target.room));
     leaveCalls();
     socket.leave(roomChannel(current.room));
@@ -84,6 +92,10 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     depart(current);
     return enter(current.name, target, current.status, messages);
   });
+
+  on('room:call-dismiss', ({ id }) => {
+    if (typeof id === 'string') groupNotifications.silence(requireUser(), id);
+  }, signalingLimiter);
 
   on('presence:update', ({ status }) => {
     requireUser();
@@ -98,7 +110,10 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     if (typeof foreground !== 'boolean') return;
     const user = requireUser();
     socket.data.foreground = foreground;
-    if (!foreground) calls.notifyBackground(user);
+    if (!foreground) {
+      calls.notifyBackground(user);
+      groupNotifications.notifyBackground(user);
+    }
   }, signalingLimiter);
 
   on('createMessage', ({ text, replyTo }) => {
@@ -162,6 +177,7 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
   socket.on('disconnect', () => {
     const user = users.removeUser(socket.id);
     if (!user) return;
+    groupNotifications.notifyBackground(user);
     depart(user);
     broadcastRooms();
   });

@@ -12,13 +12,13 @@ const { createGuestSession } = require('./services/guest-session');
 const { createFileHandlers } = require('./controllers/file.controller');
 const { PushService } = require('./services/push');
 
-function createServer(messageStore = new MessageStore(), { sendPush } = {}) {
+function createServer(messageStore = new MessageStore(), { sendPush, PeerConnectionClass } = {}) {
   const users = new Users();
   const guestSession = createGuestSession(messageStore.getSessionKey());
   const push = new PushService(messageStore, sendPush);
-  const { io, sfuService, calls } = initializeSocket(users, messageStore, guestSession, push);
+  const { io, sfuService, calls, groupNotifications } = initializeSocket(users, messageStore, guestSession, push, PeerConnectionClass);
   const files = createFileHandlers({ users, messageStore, guestSession, io, push });
-  const app = createApp({ users, guestSession, files, messageStore, push, calls });
+  const app = createApp({ users, guestSession, files, messageStore, push, calls, groupNotifications });
   const httpServer = http.createServer({ requestTimeout: 120000 }, app);
   io.attach(httpServer);
 

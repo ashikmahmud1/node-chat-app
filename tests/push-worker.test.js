@@ -58,4 +58,21 @@ describe('Web Push worker', () => {
     assert.deepEqual(delivered, [id]);
     assert.deepEqual(opened, []);
   });
+
+  for (const mode of ['audio', 'video']) {
+    it('displays a private group ' + mode + ' alert and opens the call route when the tab is closed', async () => {
+      const { displayed, opened, dispatch } = setup();
+      const id = randomUUID();
+      const kind = 'group-' + mode + '-call';
+      await dispatch('push', { data: { json: () => ({ kind, id, expiresAt: Date.now() - 1 }) } });
+      assert.equal(displayed.length, 0);
+      await dispatch('push', { data: { json: () => ({ kind, id, expiresAt: Date.now() + 45000 }) } });
+      const [{ title, options }] = displayed;
+      assert.equal(title, 'Incoming group ' + mode + ' call');
+      assert.equal(options.tag, kind + ':' + id);
+      assert.deepEqual(Object.keys(options.data), ['id']);
+      await dispatch('notificationclick', { notification: { data: options.data, close() {} } });
+      assert.deepEqual(opened, ['/chat.html?notification=' + id]);
+    });
+  }
 });

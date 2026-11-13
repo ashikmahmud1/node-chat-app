@@ -20,6 +20,8 @@ class SfuService {
     this.PeerConnectionClass = PeerConnectionClass;
     this.onPeerConnected = () => {};
     this.onPeerFailed = () => {};
+    this.onRoomCallStarted = () => {};
+    this.onRoomCallEnded = () => {};
     // Map<sessionId, Map<socketId, PeerSession>>
     this.sessions = new Map();
     this.roomCalls = new Map();
@@ -162,16 +164,19 @@ class SfuService {
   }
 
   mediaReady(peer) {
-    this.onPeerConnected(peer.socketId);
+    this.onPeerConnected(peer.socketId, peer.sessionId);
     const { sessionId, guestId, name, mode } = peer;
     if (!sessionId.startsWith('room:') || this.roomCalls.has(sessionId)) return;
-    this.roomCalls.set(sessionId, {
+    const call = {
       id: randomUUID(),
       caller: { guestId, name },
+      room: peer.room,
       mode,
       expiresAt: Date.now() + GROUP_RING_DURATION_MS,
-    });
+    };
+    this.roomCalls.set(sessionId, call);
     this.broadcastRoomCall(sessionId);
+    this.onRoomCallStarted(call);
   }
 
   failPeer(peer, error) {
@@ -347,7 +352,11 @@ class SfuService {
     clearTimeout(leavingPeer.timeout);
     session.delete(socketId);
     if (!session.size) this.sessions.delete(sessionId);
-    if (this.roomCalls.has(sessionId) && !Array.from(session.values()).some((peer) => peer.ready)) this.roomCalls.delete(sessionId);
+    const call = this.roomCalls.get(sessionId);
+    if (call && !Array.from(session.values()).some((peer) => peer.ready)) {
+      this.roomCalls.delete(sessionId);
+      this.onRoomCallEnded(call.id);
+    }
 
     for (const [targetSocketId, forwardList] of leavingPeer.forwardedSubscriptions.entries()) {
       const targetPeer = session.get(targetSocketId);

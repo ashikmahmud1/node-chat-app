@@ -52,7 +52,7 @@ async function setupPushNotifications() {
     const render = (message) => {
       button.textContent = enabled ? 'Disable notifications' : 'Enable notifications';
       button.disabled = !enabled && Notification.permission === 'denied';
-      status.textContent = message || (enabled ? 'Direct messages and incoming calls' :
+      status.textContent = message || (enabled ? 'Direct messages and incoming direct and group calls' :
         Notification.permission === 'denied' ? 'Allow notifications in your browser settings.' : '');
     };
     render();

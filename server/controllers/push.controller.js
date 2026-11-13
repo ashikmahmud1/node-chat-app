@@ -1,8 +1,11 @@
 const express = require('express');
 const { hasAllowedOrigin, UUID } = require('../services/guest-session');
 const { validEndpoint, validSubscription } = require('../services/push');
+const { roomChannel } = require('../utils/message');
+const { isRealString } = require('../utils/validation');
+const { limits } = require('../config');
 
-function createPushRouter({ guestSession, messageStore, push, calls }) {
+function createPushRouter({ guestSession, messageStore, push, calls, groupNotifications }) {
   const router = express.Router();
   router.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
@@ -15,11 +18,18 @@ function createPushRouter({ guestSession, messageStore, push, calls }) {
   router.get('/target/:id', (req, res) => {
     const { guestId } = req.pushSession;
     const { id } = req.params;
+    const group = UUID.test(id) && groupNotifications.target(id, guestId);
+    if (group) return res.json(group);
     const target = UUID.test(id) && (calls.notificationTarget(id, guestId) || messageStore.getNotificationMessage(id, guestId));
     if (!target?.name) return res.status(404).json({ error: 'This notification is no longer available.' });
     return res.json({ room: target.room, name: target.name, peerId: target.peerId });
   });
   router.use(express.json({ limit: '6kb' }));
+  router.delete('/group', (req, res) => {
+    if (!isRealString(req.body?.room, limits.maxRoomLength)) return res.status(400).json({ error: 'Invalid group.' });
+    push.leaveGroup(req.pushSession.guestId, roomChannel(req.body.room));
+    return res.sendStatus(204);
+  });
   router.put('/subscription', (req, res) => {
     if (!validSubscription(req.body)) return res.status(400).json({ error: 'Invalid push subscription.' });
     const { guestId, expiresAt } = req.pushSession;
