@@ -101,7 +101,10 @@ $(async function () {
   let knownRoomsList = [];
   let groupUnreadCounts = Object.create(null);
   let roomCall = null;
+  let activeRoomCall = null;
+  const handledRoomInvites = new Map();
   let roomCallTimerTimeout = null;
+  let roomInviteTimer;
 
   // Message Tracking, Deduplication & Typing
   var rendered_message_ids = new Set();
@@ -236,6 +239,8 @@ $(async function () {
     }, { capture: true });
   }
   window.addEventListener('pagehide', () => {
+    activeRoomCall = null;
+    clearTimeout(roomInviteTimer);
     sounds.setRinging(null);
     sounds.stopMessage();
     sounds.stopPreview();
@@ -395,6 +400,7 @@ $(async function () {
       showError(error.message);
     } finally {
       switching = false;
+      renderIncomingCall();
     }
   }
 
@@ -573,6 +579,7 @@ $(async function () {
     $('#private-send-btn, #private-send-file-click, #private-send-location, #private_messages_list .message-toolbar button')
       .each((_, button) => { button.disabled = !canSend || button.getAttribute('aria-busy') === 'true'; });
     $('#audio-call, #video-call, #private_messages_list .call-again-btn').prop('disabled', !canCall);
+    $('#join-room-audio-btn, #join-room-video-btn, #room-call-active-badge').prop('disabled', !ready || Boolean(directCall || roomCall));
     $('#direct-history-actions').toggleClass('hide-element', !directHistoryCursors.has(peer?.guestId));
     $('#load-older-direct').prop('disabled', !canSend || pendingDirectHistories.has(peer?.guestId));
   }
@@ -625,9 +632,64 @@ $(async function () {
   const stopTracks = (stream) => stream?.getTracks().forEach((track) => track.stop());
   const roomSessionId = () => 'room:chat:' + currentRoomName.toLowerCase();
 
-  function updateRoomCallStatus(participants) {
-    $('#room-call-count').text(String(participants.length));
-    $('#room-call-active-badge').toggleClass('hide-element', participants.length === 0);
+  function updateRoomCallStatus(call) {
+    const ringDeadline = call && performance.now() + call.ringRemainingMs;
+    activeRoomCall = call && {
+      ...call,
+      ringDeadline: activeRoomCall?.id === call.id ? Math.min(ringDeadline, activeRoomCall.ringDeadline) : ringDeadline,
+    };
+    $('#room-call-count').text(call?.participantCount ?? 0);
+    $('#room-call-active-badge').toggleClass('hide-element', !call).attr({
+      'aria-label': call ? 'Join group ' + call.mode + ' call, ' + call.participantCount + ' in call' : 'Join group call',
+      title: call ? 'Join group ' + call.mode + ' call' : 'Join group call',
+    });
+    $('#join-room-audio-btn span').text(call ? 'Join audio' : 'Audio');
+    $('#join-room-video-btn span').text(call ? 'Join video' : 'Video');
+    if (roomCall) handleRoomInvite(activeRoomCall);
+    else renderIncomingCall();
+  }
+
+  function incomingRoomCall() {
+    const call = activeRoomCall;
+    if (!ready || switching || roomCall || directCall || !call || currentUserStatus === 'dnd' ||
+        call.caller.guestId === guestId || handledRoomInvites.has(call.id) || call.ringDeadline <= performance.now()) return null;
+    return call;
+  }
+
+  function renderIncomingCall() {
+    clearTimeout(roomInviteTimer);
+    const group = incomingRoomCall();
+    const direct = directCall?.incoming ? directCall : null;
+    const incoming = direct || group;
+    $('#incoming-call-card').toggleClass('hide-element', !incoming);
+    if (!incoming) {
+      if (sounds.ring === 'incoming') sounds.setRinging(null);
+      return;
+    }
+    const name = group ? group.caller.name : direct.peer.name;
+    const label = group ? 'Incoming group ' + group.mode + ' call in #' + currentRoomName :
+      'Incoming ' + direct.mode + ' call';
+    $('#incoming-caller-avatar').text(getInitials(name)).attr('style', getAvatarStyle(name));
+    $('#incoming-caller-name').text(name);
+    $('#incoming-call-label').text(label);
+    $('#accept-call').attr('title', group ? 'Join group ' + group.mode + ' call' : 'Accept call')
+      .find('span').text(group ? 'Join call' : 'Accept');
+    $('#reject-call').attr('title', group ? 'Dismiss group call' : 'Decline call')
+      .find('span').text(group ? 'Dismiss' : 'Decline');
+    if (sounds.ring !== 'incoming' && sounds.preferences.incomingSounds && sounds.volumeFor('incoming')) {
+      sounds.enable();
+    }
+    sounds.setRinging('incoming');
+    if (group) roomInviteTimer = setTimeout(renderIncomingCall, Math.ceil(group.ringDeadline - performance.now()));
+  }
+
+  function handleRoomInvite(call) {
+    const now = performance.now();
+    for (const [id, deadline] of handledRoomInvites) {
+      if (deadline <= now) handledRoomInvites.delete(id);
+    }
+    if (call?.ringDeadline > now) handledRoomInvites.set(call.id, call.ringDeadline);
+    renderIncomingCall();
   }
 
   function updateShareButton(scope, presentation) {
@@ -655,6 +717,7 @@ $(async function () {
     grid.setStream(call.self.streamId, stream);
     grid.update(call.self, true);
     const media = await sfu.start(call.sessionId, call.mode, stream, {
+      roomCallId: call.roomCallId,
       onParticipants: (participants) => {
         if (!isCurrent()) return;
         for (const participant of participants) {
@@ -696,15 +759,16 @@ $(async function () {
     updateShareButton(scope, call.presentation);
   }
 
-  async function joinRoomSfuCall(mode) {
+  async function joinRoomSfuCall(mode, ongoing = activeRoomCall) {
     if (!ready || switching || roomCall) return;
     if (directCall) return showError('End your direct call before joining a group call.');
-    const call = { sessionId: roomSessionId(), mode };
+    const call = { sessionId: roomSessionId(), mode, roomCallId: ongoing?.id };
     roomCall = call;
+    handleRoomInvite(ongoing);
+    switchToGroupChatCanvas();
     updateDirectAvailability();
     sounds.stopMessage();
     sounds.stopPreview();
-    $('#join-room-audio-btn, #join-room-video-btn').prop('disabled', true);
     $('#room-call-mode-label').text(currentRoomName + ' · ' + (mode === 'video' ? 'Video call' : 'Audio call'));
     $('#room-call-timer').text('Connecting…');
     $('#room-call-stage').removeClass('hide-element');
@@ -750,8 +814,8 @@ $(async function () {
     clearInterval(roomCallTimerTimeout);
     roomCallTimerTimeout = null;
     $('#room-call-stage').addClass('hide-element');
-    $('#join-room-audio-btn, #join-room-video-btn').prop('disabled', false);
     resetMediaButtons('room');
+    renderIncomingCall();
   }
 
   socket.on('sfu:participant-left', ({ sessionId, streamId, screenStreamId }) => {
@@ -764,12 +828,15 @@ $(async function () {
     if (call?.sessionId === state.sessionId && state.socketId !== socket.id) call.grid?.update(state);
   });
 
-  socket.on('sfu:room-call-status', ({ sessionId, participants }) => {
-    if (sessionId === roomSessionId()) updateRoomCallStatus(participants);
+  socket.on('room:call-state', ({ sessionId, call }) => {
+    if (sessionId === roomSessionId()) updateRoomCallStatus(call);
   });
 
   $('#join-room-audio-btn').on('click', () => joinRoomSfuCall('audio'));
   $('#join-room-video-btn').on('click', () => joinRoomSfuCall('video'));
+  $('#room-call-active-badge').on('click', () => {
+    if (activeRoomCall) joinRoomSfuCall(activeRoomCall.mode, activeRoomCall);
+  });
   $('#room-leave-call').on('click', () => leaveRoomSfuCall());
   $('#room-toggle-screen').on('click', () => roomCall?.presentation?.toggle());
   $('#personal-toggle-screen').on('click', () => directCall?.presentation?.toggle());
@@ -811,6 +878,7 @@ $(async function () {
       await request('presence:update', { status });
       currentUserStatus = status;
       sounds.setQuiet(status === 'dnd');
+      renderIncomingCall();
       $('#current-user-status-dot').attr('class', 'user-avatar-status-dot status-' + status);
     } catch (error) {
       this.value = currentUserStatus;
@@ -1336,7 +1404,7 @@ $(async function () {
     updateDirectAvailability();
   }
 
-  socket.on('room:state', ({ user, users, messages, participants, directThreads: threads, historyLimit: limit }) => {
+  socket.on('room:state', ({ user, users, messages, roomCall: ongoing, directThreads: threads, historyLimit: limit }) => {
     historyLimit = limit;
     if (roomCall && roomCall.sessionId !== 'room:chat:' + user.room.toLowerCase()) leaveRoomSfuCall(false);
     if (dialog.open) dialog.close();
@@ -1379,9 +1447,9 @@ $(async function () {
     $('#private-message-input').val('');
     for (const message of messages) appendRoomMessageItem(message, true);
     $('#messages').scrollTop($('#messages').prop('scrollHeight'));
-    updateRoomCallStatus(participants);
     updateUsers(users);
     setConnection('Connected', true);
+    updateRoomCallStatus(ongoing);
     $('#alert-box').addClass('alert-hide');
     if (notification) {
       openPersonalChatForPeer(notification.peerId, false);
@@ -1420,6 +1488,7 @@ $(async function () {
             await request('room:switch', { room: target.room });
           } finally {
             switching = false;
+            renderIncomingCall();
           }
         }
         openPersonalChatForPeer(target.peerId, false);
@@ -1450,6 +1519,7 @@ $(async function () {
     }
     closeDirectCall();
     leaveRoomSfuCall(false);
+    updateRoomCallStatus(null);
     sounds.stopMessage();
   });
 
@@ -1713,6 +1783,7 @@ $(async function () {
     if (roomCall) return showError('Leave the group call before starting a direct call.');
     const call = { mode, peer, id: null };
     directCall = call;
+    renderIncomingCall();
     sounds.stopMessage();
     sounds.stopPreview();
     showDirectStage(call, 'Calling…');
@@ -1736,11 +1807,7 @@ $(async function () {
     if (directCall || roomCall) return send('call:end', { id, reason: 'declined' });
     directCall = { id, peer: caller, mode, incoming: true };
     updateDirectAvailability();
-    $('#incoming-caller-avatar').text(getInitials(caller.name)).attr('style', getAvatarStyle(caller.name));
-    $('#incoming-caller-name').text(caller.name);
-    $('#incoming-call-label').text(mode === 'video' ? 'Incoming video call' : 'Incoming audio call');
-    $('#incoming-call-card').removeClass('hide-element');
-    sounds.setRinging('incoming');
+    renderIncomingCall();
   });
 
   async function connectDirectMedia(call) {
@@ -1770,9 +1837,10 @@ $(async function () {
     closeCallMedia(call, personalGrid);
     clearInterval(personalCallTimerTimeout);
     personalCallTimerTimeout = null;
-    $('#personal-call-stage, #incoming-call-card').addClass('hide-element');
+    $('#personal-call-stage').addClass('hide-element');
     resetMediaButtons('personal');
     updateDirectAvailability();
+    renderIncomingCall();
   }
 
   function endDirectCall(reason) {
@@ -1782,12 +1850,13 @@ $(async function () {
   }
 
   $('#accept-call').on('click', async () => {
+    const group = incomingRoomCall();
+    if (group) return joinRoomSfuCall(group.mode, group);
     const call = directCall;
     if (!call?.incoming) return;
     call.incoming = false;
     call.accepted = true;
-    $('#incoming-call-card').addClass('hide-element');
-    sounds.setRinging(null);
+    renderIncomingCall();
     openPersonalChatForPeer(call.peer.guestId);
     showDirectStage(call, 'Connecting…');
     try {
@@ -1826,7 +1895,11 @@ $(async function () {
     if (reason === 'failed') showError('The call could not connect.');
   });
 
-  $('#reject-call').on('click', () => endDirectCall('declined'));
+  $('#reject-call').on('click', () => {
+    const group = incomingRoomCall();
+    if (group) handleRoomInvite(group);
+    else if (directCall?.incoming) endDirectCall('declined');
+  });
   $('#end-call').on('click', () => endDirectCall());
   $('#audio-call').on('click', () => startDirectCall('audio'));
   $('#video-call').on('click', () => startDirectCall('video'));

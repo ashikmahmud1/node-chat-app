@@ -1057,6 +1057,19 @@ button:disabled {
   font-weight: 600;
 }
 
+.room-call-badge:not(:disabled):hover {
+  background: #d1fae5;
+}
+
+.room-call-badge:disabled {
+  opacity: 1;
+}
+
+.room-call-badge:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .btn-back-to-group {
   background: var(--primary-subtle);
   color: var(--primary);

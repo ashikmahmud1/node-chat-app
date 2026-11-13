@@ -66,10 +66,10 @@ describe('SFU negotiation and cleanup', () => {
 
   afterEach(() => service.closeAllSessions());
 
-  async function join(id, sdp = 'offer') {
+  async function join(id, sdp = 'offer', roomCallId) {
     const { sdp: answer } = await service.joinSession({
       sessionId, socket: { id }, mode: 'video', sdp: { type: 'offer', sdp }, screenMid: '2',
-      user: { name: id, room: 'Engineering' },
+      user: { guestId: id + '-guest', name: id, room: 'Engineering' }, roomCallId,
     });
     assert.match(answer.sdp, /s=-\r\nc=IN IP4 0\.0\.0\.0\r\nt=0 0/);
     assert.match(answer.sdp, /m=audio[^\r]*\r\nc=IN IP4 192\.0\.2\.10/);
@@ -81,6 +81,41 @@ describe('SFU negotiation and cleanup', () => {
     assert.equal(service.getActiveSessionCount(), 0);
     await join('alice');
     await assert.rejects(join('alice'), /Leave your current call/);
+  });
+
+  it('rings once when the first participant is ready and connected, and gives the next call a new identity', async () => {
+    const states = () => emitted.filter(({ event }) => event === 'room:call-state');
+    const alice = await join('alice');
+    assert.equal(service.getRoomCall(sessionId), null);
+    alice.pc.connectionStateChange.emit('connected');
+    assert.equal(states().length, 0);
+    service.ready(sessionId, 'alice');
+    const first = service.getRoomCall(sessionId);
+    assert.deepEqual(first.caller, { guestId: 'alice-guest', name: 'alice' });
+    assert.equal(first.mode, 'video');
+    assert.equal(first.participantCount, 1);
+    assert.ok(first.ringRemainingMs > 0 && first.ringRemainingMs <= 45000);
+    assert.equal(states().at(-1).target, 'chat:engineering');
+    assert.equal(states().at(-1).data.sessionId, sessionId);
+
+    const bob = await join('bob');
+    service.ready(sessionId, 'bob');
+    bob.pc.connectionStateChange.emit('connected');
+    await service.leaveSession(sessionId, 'alice');
+    assert.equal(service.getRoomCall(sessionId).id, first.id);
+    assert.equal(service.getRoomCall(sessionId).participantCount, 1);
+    assert.ok(states().every(({ data }) => data.call.id === first.id && data.call.ringRemainingMs <= 45000));
+    await join('pending', 'offer', first.id);
+    await service.leaveSession(sessionId, 'bob');
+    assert.equal(states().at(-1).data.call, null);
+    await assert.rejects(service.joinSession({ sessionId, roomCallId: first.id }), /This group call has ended/);
+    assert.throws(() => service.ready(sessionId, 'pending'), /This group call has ended/);
+    assert.equal(service.hasPeer('pending'), false);
+
+    const carol = await join('carol');
+    service.ready(sessionId, 'carol');
+    carol.pc.connectionStateChange.emit('connected');
+    assert.notEqual(service.getRoomCall(sessionId).id, first.id);
   });
 
   it('offers forwarded tracks after initial negotiation and waits for the matching answer', async () => {

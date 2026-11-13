@@ -1,7 +1,10 @@
+const { randomUUID } = require('node:crypto');
 const { RTCPeerConnection, MediaStreamTrack, MediaStream } = require('werift');
 const config = require('../config');
 const { logger } = require('../utils/logger');
 const { reject } = require('../sockets/events');
+
+const GROUP_RING_DURATION_MS = 45000;
 
 function localDescriptionForBrowser({ type, sdp }) {
   // RFC 8866 requires connection information at session level or in every
@@ -19,6 +22,7 @@ class SfuService {
     this.onPeerFailed = () => {};
     // Map<sessionId, Map<socketId, PeerSession>>
     this.sessions = new Map();
+    this.roomCalls = new Map();
   }
 
   getActiveSessionCount() {
@@ -53,7 +57,18 @@ class SfuService {
     return Array.from(this.sessions.values()).some((session) => session.has(socketId));
   }
 
-  async joinSession({ sessionId, socket, mode, sdp, screenMid, user }) {
+  getRoomCall(sessionId) {
+    const call = this.roomCalls.get(sessionId);
+    if (!call) return null;
+    const { id, caller, mode, expiresAt } = call;
+    const participantCount = Array.from(this.sessions.get(sessionId).values()).filter((peer) => peer.ready).length;
+    return { id, caller, mode, participantCount, ringRemainingMs: Math.max(0, expiresAt - Date.now()) };
+  }
+
+  async joinSession({ sessionId, socket, mode, sdp, screenMid, user, roomCallId }) {
+    if (roomCallId !== undefined && this.roomCalls.get(sessionId)?.id !== roomCallId) {
+      reject('This group call has ended.');
+    }
     if (this.hasPeer(socket.id)) reject('Leave your current call first.');
     const activePeers = Array.from(this.sessions.values()).reduce((total, session) => total + session.size, 0);
     if (activePeers >= config.limits.maxSfuPeers) reject('All media connections are in use. Try again shortly.');
@@ -67,6 +82,8 @@ class SfuService {
     const peerState = {
       sessionId,
       socketId: socket.id,
+      guestId: user.guestId,
+      roomCallId,
       name: user.name,
       room: user.room,
       mode,
@@ -92,7 +109,7 @@ class SfuService {
     pc.connectionStateChange.subscribe((state) => {
       if (peerState.closed) return;
       peerState.connected = state === 'connected';
-      if (peerState.connected) this.onPeerConnected(socket.id);
+      if (peerState.connected && peerState.ready) this.mediaReady(peerState);
       if (state === 'failed') this.failPeer(peerState);
     });
 
@@ -118,7 +135,6 @@ class SfuService {
         logger.warn('No local media candidates were gathered. Check the RTC UDP range and network configuration.');
         reject('The server could not open a media connection.');
       }
-      this.broadcastParticipants(sessionId);
       return { sdp: localDescriptionForBrowser(pc.localDescription), participants: this.getSessionParticipants(sessionId) };
     } catch (error) {
       if (!peerState.closed) this.closePeer(sessionId, socket.id);
@@ -130,13 +146,32 @@ class SfuService {
     const session = this.sessions.get(sessionId);
     const peer = session?.get(socketId);
     if (!peer || peer.closed || peer.ready) return;
+    if (peer.roomCallId && this.roomCalls.get(sessionId)?.id !== peer.roomCallId) {
+      this.closePeer(sessionId, socketId);
+      reject('This group call has ended.');
+    }
     clearTimeout(peer.timeout);
     peer.ready = true;
+    if (this.roomCalls.has(sessionId)) this.broadcastRoomCall(sessionId);
+    if (peer.connected) this.mediaReady(peer);
     for (const other of session.values()) {
       if (other === peer || !other.ready) continue;
       for (const publication of other.publishedTracks.values()) this.forwardTrackToSubscriber(other, publication, peer);
       for (const publication of peer.publishedTracks.values()) this.forwardTrackToSubscriber(peer, publication, other);
     }
+  }
+
+  mediaReady(peer) {
+    this.onPeerConnected(peer.socketId);
+    const { sessionId, guestId, name, mode } = peer;
+    if (!sessionId.startsWith('room:') || this.roomCalls.has(sessionId)) return;
+    this.roomCalls.set(sessionId, {
+      id: randomUUID(),
+      caller: { guestId, name },
+      mode,
+      expiresAt: Date.now() + GROUP_RING_DURATION_MS,
+    });
+    this.broadcastRoomCall(sessionId);
   }
 
   failPeer(peer, error) {
@@ -312,6 +347,7 @@ class SfuService {
     clearTimeout(leavingPeer.timeout);
     session.delete(socketId);
     if (!session.size) this.sessions.delete(sessionId);
+    if (this.roomCalls.has(sessionId) && !Array.from(session.values()).some((peer) => peer.ready)) this.roomCalls.delete(sessionId);
 
     for (const [targetSocketId, forwardList] of leavingPeer.forwardedSubscriptions.entries()) {
       const targetPeer = session.get(targetSocketId);
@@ -350,7 +386,7 @@ class SfuService {
           screenStreamId: leavingPeer.screenStreamId,
         });
       }
-      this.broadcastParticipants(sessionId);
+      this.broadcastRoomCall(sessionId);
     }
 
     await leavingPeer.pc.close();
@@ -380,11 +416,11 @@ class SfuService {
     this.sessions.clear();
   }
 
-  broadcastParticipants(sessionId) {
+  broadcastRoomCall(sessionId) {
     if (!sessionId.startsWith('room:')) return;
-    this.io.to(sessionId.slice(5)).emit('sfu:room-call-status', {
+    this.io.to(sessionId.slice(5)).emit('room:call-state', {
       sessionId,
-      participants: this.getSessionParticipants(sessionId),
+      call: this.getRoomCall(sessionId),
     });
   }
 }

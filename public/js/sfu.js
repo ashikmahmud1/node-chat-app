@@ -10,7 +10,7 @@ class SfuClient {
     });
   }
 
-  async start(sessionId, mode, stream, { onTrack, onConnected, onError, onParticipants }) {
+  async start(sessionId, mode, stream, { onTrack, onConnected, onError, onParticipants, roomCallId }) {
     const response = await fetch('/api/rtc-config', { signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error('Call configuration is unavailable.');
     const { iceServers, iceTransportPolicy } = await response.json();
@@ -46,7 +46,9 @@ class SfuClient {
     if (iceTransportPolicy === 'relay' && !/^a=candidate:[^\r\n]+ typ relay(?: |\r?$)/m.test(pc.localDescription.sdp)) {
       throw new Error('The browser could not reach the TURN relay.');
     }
-    const result = await this.request('sfu:join', { sessionId, mode, screenMid: presentation.mid, sdp: pc.localDescription }, 28000);
+    const result = await this.request('sfu:join', {
+      sessionId, mode, roomCallId, screenMid: presentation.mid, sdp: pc.localDescription,
+    }, 28000);
     if (this.current !== state) return null;
     onParticipants(result.participants);
     await pc.setRemoteDescription(result.sdp);

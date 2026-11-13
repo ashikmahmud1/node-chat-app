@@ -30,7 +30,7 @@ function registerChatHandlers({ io, socket, users, messageStore, on, leaveCalls,
     historyLimit: messageStore.limit,
     users: users.getUserList(user.room),
     directThreads: messageStore.getDirectThreads(user),
-    participants: sfuService.getSessionParticipants(`room:${roomChannel(user.room)}`),
+    roomCall: sfuService.getRoomCall(`room:${roomChannel(user.room)}`),
   });
 
   const resolveRoom = (name, room) => {

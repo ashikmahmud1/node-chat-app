@@ -25,14 +25,17 @@ function validPublications(sdp, mode, screenMid) {
 }
 
 function registerSfuHandlers({ socket, users, sfuService, calls, on, signalingLimiter }) {
-  on('sfu:join', ({ sessionId, mode, sdp, screenMid }) => {
+  on('sfu:join', ({ sessionId, mode, sdp, screenMid, roomCallId }) => {
     const user = users.getUser(socket.id);
     if (!user || typeof sessionId !== 'string' ||
         (!sessionId.startsWith('private:') && sessionId !== `room:${roomChannel(user.room)}`) ||
         !calls.authorize(socket.id, sessionId, mode)) reject('You cannot join this call.');
     if (!['audio', 'video'].includes(mode) || !validSdp(sdp, 'offer') ||
         !validPublications(sdp.sdp, mode, screenMid)) reject('Invalid call offer.');
-    return sfuService.joinSession({ sessionId, socket, mode, sdp, screenMid, user });
+    if (roomCallId !== undefined && (typeof roomCallId !== 'string' || !sessionId.startsWith('room:'))) {
+      reject('Invalid group call.');
+    }
+    return sfuService.joinSession({ sessionId, socket, mode, sdp, screenMid, user, roomCallId });
   });
 
   on('sfu:ready', ({ sessionId }) => sfuService.ready(sessionId, socket.id), signalingLimiter);
